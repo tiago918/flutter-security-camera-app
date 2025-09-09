@@ -21,10 +21,9 @@ class RecordedVideosPage extends StatefulWidget {
 class _RecordedVideosPageState extends State<RecordedVideosPage> {
   final VideoManagementService _videoService = VideoManagementService();
   final AutoRecordingService _autoRecordingService = AutoRecordingService();
-  final OnvifPlaybackService _playbackService = OnvifPlaybackService(acceptSelfSigned: widget.camera.acceptSelfSigned);
+  late final OnvifPlaybackService _playbackService;
   
   List<RecordedVideo> _videos = [];
-  List<RecordingInfo> _onvifRecordings = [];
   VideoStorageStats? _storageStats;
   AutoRecordingStats? _recordingStats;
   bool _isLoading = true;
@@ -36,6 +35,7 @@ class _RecordedVideosPageState extends State<RecordedVideosPage> {
   @override
   void initState() {
     super.initState();
+    _playbackService = OnvifPlaybackService(acceptSelfSigned: widget.camera.acceptSelfSigned);
     _loadVideos();
     _loadStats();
   }
@@ -223,6 +223,7 @@ class _RecordedVideosPageState extends State<RecordedVideosPage> {
   }
 
   void _showErrorSnackBar(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
@@ -233,6 +234,7 @@ class _RecordedVideosPageState extends State<RecordedVideosPage> {
   }
 
   void _showSuccessSnackBar(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
@@ -264,24 +266,11 @@ class _RecordedVideosPageState extends State<RecordedVideosPage> {
     return result ?? false;
   }
 
-  void _showInfoDialog(String title, String message) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-  }
+
 
   Future<void> _downloadVideo(RecordedVideo video) async {
     try {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Iniciando download: ${video.filename}'),
@@ -312,6 +301,7 @@ class _RecordedVideosPageState extends State<RecordedVideosPage> {
         downloadPath,
       );
       
+      if (!mounted) return;
       if (success) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -331,6 +321,7 @@ class _RecordedVideosPageState extends State<RecordedVideosPage> {
       }
       
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Erro no download: $e'),

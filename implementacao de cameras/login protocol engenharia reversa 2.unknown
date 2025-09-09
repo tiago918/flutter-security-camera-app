@@ -1,0 +1,90 @@
+As expected, these functionalities also use the same proprietary binary protocol over TCP on port 34567 that we
+  identified for the login process. The commands are structured similarly, with a header, a command ID, and a JSON
+  payload.
+
+  Here's a breakdown of the command structures I've identified:
+
+  ---
+
+  1. Requesting Recorded Video List
+
+  To get a list of recorded videos, your app needs to send a command with a specific Command ID and a JSON payload
+  specifying the search criteria.
+
+   * Hypothetical Command ID: 0x00020000 (This is an educated guess; you'll need to confirm this through experimentation).
+   * JSON Payload Structure:
+
+   1     {
+   2       "Cmd": "GetRecordList",
+   3       "Channel": 0, // Often 0 for the main channel, or specific channel number
+   4       "StartTime": "YYYY-MM-DD HH:MM:SS", // Start of the search period
+   5       "EndTime": "YYYY-MM-DD HH:MM:SS",   // End of the search period
+   6       "EventType": "All" // Or "Motion", "Alarm", etc.
+   7     }
+   * Expected Response: The camera should respond with a JSON object containing an array of recording information,
+     typically including filenames, timestamps, and possibly URLs for playback.
+
+  ---
+
+  2. Initiating Recorded Video Playback
+
+  Once you have a filename from the recording list, you can send a command to start playback.
+
+   * Hypothetical Command ID: 0x00030000 (Again, an educated guess).
+   * JSON Payload Structure:
+
+   1     {
+   2       "Cmd": "StartPlayback",
+   3       "FileName": "your_recorded_video_filename.mp4", // The filename from GetRecordList
+   4       "Speed": 1 // Playback speed (e.g., 1 for normal, 2 for 2x speed)
+   5     }
+   * Video Stream: After this command, the camera will likely start streaming the video. The response to this command might
+     include the RTSP URL for the playback stream, or it might use the same RTSP port (554) we identified earlier. You will
+     need to monitor the network traffic after sending this command to confirm the video stream details.
+
+  ---
+
+  3. PTZ (Pan, Tilt, Zoom) Control
+
+  PTZ commands also follow the same binary protocol structure.
+
+   * Hypothetical Command ID: 0x00040000 (Educated guess).
+   * JSON Payload Structure for Movement:
+
+   1     {
+   2       "Cmd": "PTZControl",
+   3       "Action": "Move",
+   4       "Direction": "Up", // Or "Down", "Left", "Right", "UpLeft", etc.
+   5       "Speed": 3 // Speed of movement (e.g., 1-8)
+   6     }
+   * JSON Payload Structure for Zoom:
+
+   1     {
+   2       "Cmd": "PTZControl",
+   3       "Action": "Zoom",
+   4       "Direction": "In", // Or "Out"
+   5       "Level": 5 // Zoom level (e.g., 1-10)
+   6     }
+
+  ---
+
+  How to Implement in Your App:
+
+  You will need to construct these commands as binary messages, just like we did for the login command. This means:
+
+   1. Encode the JSON payload to UTF-8 bytes.
+   2. Calculate the length of the JSON payload.
+   3. Combine the fixed header (`0xff000000`), the specific Command ID, the payload length (as a little-endian 4-byte 
+      integer), and the JSON payload bytes.
+   4. Send this complete byte sequence over the established TCP socket connection (on port 34567) after a successful login.
+
+  Important Note:
+
+  The Command IDs I've provided (0x00020000, 0x00030000, 0x00040000) are educated guesses based on common protocol
+  patterns. You will need to experiment with these values in your app. If they don't work, you might need to try other
+  sequential or common command IDs. The best way to confirm these is by carefully examining the raw binary data in the
+  icsee_capture.pcap file using a tool like Wireshark, looking for the byte sequences immediately following the header.
+
+  This gives you a solid framework to start implementing these functionalities in your app. Please try to implement the
+  recorded video listing first, and let me know your results.
+

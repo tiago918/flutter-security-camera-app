@@ -10,6 +10,8 @@
 include: package:flutter_lints/flutter.yaml
 
 analyzer:
+  exclude:
+    - lib/pages/devices_and_cameras_page_backup_full.dart
   errors:
     # Trate alguns lints comuns como infos para não falhar builds locais
     unused_import: info

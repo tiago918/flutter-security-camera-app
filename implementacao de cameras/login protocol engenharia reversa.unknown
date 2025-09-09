@@ -1,0 +1,106 @@
+1 # Reverse Engineering Notes: Camera Login Protocol
+    2 
+    3 This document outlines the reverse-engineered protocol for logging into the security camera.
+    4 
+    5 ## Protocol Overview
+    6 
+    7 The camera uses a proprietary binary protocol over TCP on port **34567**. The commands are sent as a sequence
+      of bytes with a specific structure.
+    8 
+    9 ## Login Command
+   10 
+   11 The login command consists of a header, a command ID, and a JSON payload.
+   12 
+   13 *   **Header:** A fixed 4-byte sequence: `0xff000000`
+   14 *   **Command ID:** A 4-byte value: `0x00010000`
+   15 *   **Payload Length:** A 4-byte little-endian integer representing the length of the JSON payload.
+   16 *   **JSON Payload:** A JSON object with the following structure:
+  {
+    "EncryptType": "MD5",
+    "LoginType": "DVRIP-Web",
+    "PassWord": "<md5-hash-of-password>",
+    "UserName": "<username>"
+  }
+
+    1 
+    2 ### Password Hashing
+    3 
+    4 The password is not sent in clear text. It is hashed using the **MD5** algorithm.
+    5 
+    6 For example, the MD5 hash of the password `7383hhidb` is `a9f5a7a5a7a5a7a5a7a5a7a5a7a5a7a5` (this is just an
+      example, the actual hash will be different).
+    7 
+    8 ## Dart Code Example
+    9 
+   10 Here is a Dart code snippet that demonstrates how to construct and send the login command:
+  import 'dart:convert';
+  import 'dart:io';
+  import 'dart:typed_data';
+  import 'package:crypto/crypto.dart';
+
+  class CameraLoginService {
+    Future<bool> login(String host, String user, String password) async {
+      try {
+        // The camera's IP address and port
+        final cameraHost = host;
+        final cameraPort = 34567;
+
+        // The username and password for the camera
+        final username = user;
+        final plainPassword = password;
+
+        // The iCSee app uses a custom JSON-based protocol
+        // Here is the login command payload
+        final loginPayload = {
+          "EncryptType": "MD5",
+          "LoginType": "DVRIP-Web",
+          "PassWord": md5.convert(utf8.encode(plainPassword)).toString(),
+          "UserName": username,
+        };
+
+        // The JSON payload is part of a larger binary message
+        // Here we construct the full message with the header and command ID
+        final jsonString = json.encode(loginPayload);
+        final jsonBytes = utf8.encode(jsonString);
+
+        // The binary message header
+        final header = Uint8List.fromList([0xff, 0x00, 0x00, 0x00]);
+        final commandId = Uint8List.fromList([0x00, 0x01, 0x00, 0x00]);
+        final payloadLength = ByteData(4)..setUint32(0, jsonBytes.length, Endian.little);
+
+        // Combine all the parts to create the full login command
+        final loginCommand = BytesBuilder()
+          ..add(header)
+          ..add(commandId)
+          ..add(payloadLength.buffer.asUint8List())
+          ..add(jsonBytes);
+
+        // Create a TCP socket connection to the camera
+        final socket = await Socket.connect(cameraHost, cameraPort, timeout: Duration(seconds: 10));
+
+        // Send the login command
+        socket.add(loginCommand.toBytes());
+        await socket.flush();
+
+        // Listen for the response from the camera
+        await for (var data in socket) {
+          final response = utf8.decode(data);
+          print('Camera Response: $response');
+
+          // Check if the login was successful
+          if (response.contains('"Ret":100')) {
+            print('Login successful!');
+            socket.destroy();
+            return true;
+          }
+        }
+
+        socket.destroy();
+        return false;
+      } catch (e) {
+        print('Error during login: $e');
+        return false;
+      }
+    }
+  }
+

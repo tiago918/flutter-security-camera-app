@@ -1,13 +1,12 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../models/camera_models.dart';
-import 'onvif_ptz_service.dart';
+import 'package:security_camera_app/models/ptz_models.dart';
+import 'package:security_camera_app/models/camera_models.dart';
 import 'package:easy_onvif/onvif.dart';
 
 class PtzFavoritesService {
   static const String _keyPrefix = 'ptz_favorites_';
-  final OnvifPtzService _ptzService = const OnvifPtzService();
 
   /// Salva uma nova posição favorita
   Future<bool> saveFavoritePosition({
@@ -212,8 +211,6 @@ class PtzFavoritesService {
       // Obter perfis
       final profiles = await onvif.media.getProfiles().timeout(const Duration(seconds: 5));
       if (profiles.isEmpty) return false;
-      
-      final profileToken = profiles.first.token;
       
       // TODO: Vector1D não disponível na versão atual do easy_onvif
       // Simular movimento PTZ por enquanto

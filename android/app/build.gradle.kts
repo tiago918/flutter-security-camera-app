@@ -20,14 +20,14 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.security_camera_app"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        
+        // Configurações para evitar crashes do Flutter engine
+        manifestPlaceholders["flutter_embedding_version"] = "2"
     }
 
     buildTypes {
@@ -38,7 +38,27 @@ android {
         }
     }
 
-    // Removed custom ABI splits to let Flutter's --split-per-abi manage outputs under flutter-apk
+    // Configurações de packaging para estabilidade
+    packagingOptions {
+        pickFirst("**/libc++_shared.so")
+        pickFirst("**/libfvp.so")
+        pickFirst("**/libflutter.so")
+        exclude("META-INF/DEPENDENCIES")
+        exclude("META-INF/LICENSE")
+        exclude("META-INF/LICENSE.txt")
+        exclude("META-INF/NOTICE")
+        exclude("META-INF/NOTICE.txt")
+    }
+    
+    // Configurações de splits para ARM64
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = false
+        }
+    }
 }
 
 flutter {

@@ -1,10 +1,15 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../models/camera_models.dart';
+import '../models/models.dart';
+
 import 'motion_detection_service.dart';
 import 'recording_service.dart';
+
+// Import MotionEvent from motion_detection_service
+export 'motion_detection_service.dart' show MotionEvent;
 
 /// Serviço para gravação automática baseada em detecção de movimento
 class AutoRecordingService {
@@ -15,15 +20,15 @@ class AutoRecordingService {
   final MotionDetectionService _motionService = MotionDetectionService();
   final RecordingService _recordingService = RecordingService();
   
-  final Map<int, StreamSubscription> _motionSubscriptions = {};
-  final Map<int, Timer> _recordingTimers = {};
-  final Map<int, AutoRecordingSettings> _settings = {};
+  final Map<String, StreamSubscription?> _motionSubscriptions = {};
+  final Map<String, Timer> _recordingTimers = {};
+  final Map<String, AutoRecordingSettings> _settings = {};
   
   final StreamController<AutoRecordingEvent> _eventController = StreamController<AutoRecordingEvent>.broadcast();
   Stream<AutoRecordingEvent> get eventStream => _eventController.stream;
 
   /// Inicia gravação automática para uma câmera
-  Future<void> startAutoRecording(CameraData camera) async {
+  Future<void> startAutoRecording(CameraModel camera) async {
     if (_motionSubscriptions.containsKey(camera.id)) {
       print('Auto Recording: Already active for camera ${camera.name}');
       return;
@@ -42,8 +47,8 @@ class AutoRecordingService {
     
     // Escuta eventos de movimento
     _motionSubscriptions[camera.id] = _motionService.motionStream
-        .where((event) => event.cameraId == camera.id)
-        .listen((motionEvent) => _handleMotionDetected(camera, motionEvent, settings));
+        ?.where((event) => event.cameraId == camera.id)
+        ?.listen((motionEvent) => _handleMotionDetected(camera, motionEvent, settings));
     
     print('Auto Recording: Started for camera ${camera.name}');
     
@@ -57,7 +62,7 @@ class AutoRecordingService {
   }
 
   /// Para gravação automática para uma câmera
-  Future<void> stopAutoRecording(int cameraId) async {
+  Future<void> stopAutoRecording(String cameraId) async {
     _motionSubscriptions[cameraId]?.cancel();
     _motionSubscriptions.remove(cameraId);
     
@@ -72,7 +77,7 @@ class AutoRecordingService {
   }
 
   /// Manipula evento de movimento detectado
-  Future<void> _handleMotionDetected(CameraData camera, MotionEvent motionEvent, AutoRecordingSettings settings) async {
+  Future<void> _handleMotionDetected(CameraModel camera, MotionEvent motionEvent, AutoRecordingSettings settings) async {
     print('Auto Recording: Motion detected on ${camera.name}, starting recording...');
     
     // Cancelar timer anterior se existir
@@ -85,12 +90,12 @@ class AutoRecordingService {
       }
       
       // Iniciar gravação
-      final success = await _recordingService.startRecording(
-        camera,
+      final recording = await _recordingService.startRecording(
+        camera.id.toString(),
         duration: Duration(seconds: settings.recordingDuration),
       );
       
-      if (success) {
+      if (recording != null) {
         _eventController.add(AutoRecordingEvent(
           type: AutoRecordingEventType.recordingStarted,
           cameraId: camera.id,
@@ -127,7 +132,7 @@ class AutoRecordingService {
   }
 
   /// Para gravação após movimento
-  Future<void> _stopRecordingAfterMotion(CameraData camera) async {
+  Future<void> _stopRecordingAfterMotion(CameraModel camera) async {
     try {
       final success = await _recordingService.stopRecording(camera.id.toString());
       
@@ -149,7 +154,7 @@ class AutoRecordingService {
   }
 
   /// Realiza limpeza cíclica de gravações antigas
-  Future<void> _performCyclicCleanup(int cameraId) async {
+  Future<void> _performCyclicCleanup(String cameraId) async {
     final settings = _settings[cameraId];
     if (settings == null || !settings.cyclicRecording) return;
     
@@ -208,7 +213,7 @@ class AutoRecordingService {
   }
 
   /// Obtém configurações de gravação automática
-  Future<AutoRecordingSettings> getAutoRecordingSettings(int cameraId) async {
+  Future<AutoRecordingSettings> getAutoRecordingSettings(String cameraId) async {
     final prefs = await SharedPreferences.getInstance();
     
     return AutoRecordingSettings(
@@ -225,7 +230,7 @@ class AutoRecordingService {
   }
 
   /// Salva configurações de gravação automática
-  Future<void> saveAutoRecordingSettings(int cameraId, AutoRecordingSettings settings) async {
+  Future<void> saveAutoRecordingSettings(String cameraId, AutoRecordingSettings settings) async {
     final prefs = await SharedPreferences.getInstance();
     
     await prefs.setBool('auto_recording_enabled_$cameraId', settings.enabled);
@@ -243,12 +248,12 @@ class AutoRecordingService {
   }
 
   /// Verifica se gravação automática está ativa
-  bool isAutoRecordingActive(int cameraId) {
+  bool isAutoRecordingActive(String cameraId) {
     return _motionSubscriptions.containsKey(cameraId);
   }
 
   /// Obtém estatísticas de gravação
-  Future<AutoRecordingStats> getRecordingStats(int cameraId) async {
+  Future<AutoRecordingStats> getRecordingStats(String cameraId) async {
     try {
       final recordingsDir = await _getRecordingsDirectory();
       final files = await recordingsDir.list().where((entity) => 
@@ -287,7 +292,7 @@ class AutoRecordingService {
   /// Dispose resources
   void dispose() {
     for (final subscription in _motionSubscriptions.values) {
-      subscription.cancel();
+      subscription?.cancel();
     }
     _motionSubscriptions.clear();
     
@@ -353,7 +358,7 @@ class AutoRecordingSettings {
 /// Evento de gravação automática
 class AutoRecordingEvent {
   final AutoRecordingEventType type;
-  final int cameraId;
+  final String cameraId;
   final String cameraName;
   final DateTime timestamp;
   final String message;

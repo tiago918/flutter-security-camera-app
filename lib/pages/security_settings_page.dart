@@ -112,16 +112,18 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
                           setState(() => _acceptSelfSigned = v);
                           await _setSelfSignedPref(v);
                           if (!mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                v
-                                    ? 'Certificados autoassinados: ATIVADO (afeta novas conexões).'
-                                    : 'Certificados autoassinados: DESATIVADO (afeta novas conexões).',
-                              ),
-                              duration: const Duration(seconds: 2),
-                            ),
-                          );
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    v
+                                        ? 'Certificados autoassinados: ATIVADO (afeta novas conexões).'
+                                        : 'Certificados autoassinados: DESATIVADO (afeta novas conexões).',
+                                  ),
+                                  duration: const Duration(seconds: 2),
+                                ),
+                              );
+                            }
                         },
                       ),
                     ],
@@ -217,22 +219,23 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
                 final confirmPass = _confirmPasswordController.text.trim();
 
                 if (newPass != confirmPass || newPass.isEmpty) {
-                  Navigator.of(context).pop();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('As senhas não coincidem ou estão vazias.')),
-                  );
+                  if (context.mounted) {
+                    Navigator.of(context).pop();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('As senhas não coincidem ou estão vazias.')),
+                    );
+                  }
                   return;
                 }
 
-                final success = await AuthService().changePassword(currentPass, newPass);
-                if (context.mounted) {
-                  Navigator.of(context).pop();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(success ? 'Senha alterada com sucesso!' : 'Falha ao alterar a senha.'),
-                    ),
-                  );
-                }
+                final success = await AuthService.instance.changePassword(currentPass, newPass);
+                if (!context.mounted) return;
+                Navigator.of(context).pop();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(success ? 'Senha alterada com sucesso!' : 'Falha ao alterar a senha.'),
+                  ),
+                );
               },
               child: const Text(
                 'Salvar',

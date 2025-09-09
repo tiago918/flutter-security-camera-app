@@ -1,623 +1,571 @@
 import 'dart:async';
 import 'dart:math';
-import 'package:flutter/material.dart';
-import 'package:easy_onvif/onvif.dart';
-import '../models/camera_models.dart';
+import 'dart:typed_data';
+import 'package:async/async.dart';
+
+import '../models/models.dart';
+import 'camera_service.dart';
+import 'notification_service.dart';
 
 class MotionDetectionService {
   static final MotionDetectionService _instance = MotionDetectionService._internal();
   factory MotionDetectionService() => _instance;
   MotionDetectionService._internal();
 
+  final CameraService _cameraService = CameraService();
   final Map<String, MotionDetectionConfig> _configs = {};
-  final StreamController<Map<String, MotionDetectionConfig>> _configsController = 
-      StreamController<Map<String, MotionDetectionConfig>>.broadcast();
+  final Map<String, StreamController<MotionEvent>> _motionStreams = {};
+  final Map<String, Timer?> _detectionTimers = {};
+  final Map<String, DateTime?> _lastMotionDetected = {};
+  final Map<String, List<MotionZone>> _detectionZones = {};
 
-  final StreamController<MotionEvent> _motionController = StreamController<MotionEvent>.broadcast();
-  Stream<MotionEvent> get motionStream => _motionController.stream;
-  
-  final Map<int, Timer> _motionTimers = {};
-
-  Stream<Map<String, MotionDetectionConfig>> get configsStream => _configsController.stream;
-  Map<String, MotionDetectionConfig> get configs => Map.unmodifiable(_configs);
-
-  static const Duration _connectionTimeout = Duration(seconds: 10);
-  static const Duration _commandTimeout = Duration(seconds: 5);
-
-  /// Inicia detecção de movimento para uma câmera
-  Future<bool> startMotionDetection(CameraData camera) async {
-    final config = await getMotionDetectionConfig(camera.id);
-    if (!config.enabled) {
-      print('Motion Detection: Disabled for camera ${camera.name}');
+  /// Configura detecção de movimento para uma câmera
+  Future<bool> configureMotionDetection(
+    String cameraId,
+    MotionDetectionConfig config,
+  ) async {
+    if (!_cameraService.isConnected(cameraId)) {
+      print('Câmera $cameraId não está conectada');
       return false;
     }
 
-    // Iniciar detecção de movimento real via ONVIF
-    await _startRealMotionDetection(camera, config);
-    
-    return await configureMotionDetection(camera, config);
-  }
-
-  /// Para detecção de movimento para uma câmera
-  void stopMotionDetection(int cameraId) {
-    _motionTimers[cameraId]?.cancel();
-    _motionTimers.remove(cameraId);
-    print('Motion Detection: Stopped for camera ID $cameraId');
-  }
-
-  /// Inicia detecção de movimento real via ONVIF Events
-  Future<void> _startRealMotionDetection(CameraData camera, MotionDetectionConfig config) async {
-    _motionTimers[camera.id]?.cancel();
-    
     try {
-      final user = camera.username?.trim() ?? '';
-      final pass = camera.password?.trim() ?? '';
-      if (user.isEmpty || pass.isEmpty) {
-        print('Motion Detection Error: Missing ONVIF credentials for ${camera.name}');
-        return;
-      }
+      final command = {
+        'Command': 'SET_MOTION_DETECTION',
+        'Enabled': config.enabled,
+        'Sensitivity': config.sensitivity,
+        'Threshold': config.threshold,
+        'MinObjectSize': config.minObjectSize,
+        'MaxObjectSize': config.maxObjectSize,
+        'DetectionAreas': config.detectionAreas.map((area) => {
+          'x': area.x,
+          'y': area.y,
+          'width': area.width,
+          'height': area.height,
+          'enabled': area.enabled,
+        }).toList(),
+        'Schedule': config.schedule?.map((schedule) => {
+          'dayOfWeek': schedule.dayOfWeek,
+          'startTime': schedule.startTime,
+          'endTime': schedule.endTime,
+          'enabled': schedule.enabled,
+        }).toList(),
+        'Timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
 
-      final uri = Uri.tryParse(camera.streamUrl);
-      if (uri == null) return;
+      final response = await _cameraService.sendCommand(cameraId, command);
       
-      final host = uri.host;
-      if (host.isEmpty) return;
-
-      // Conectar ao dispositivo ONVIF
-      final onvif = await _connectToOnvif(host, user, pass);
-      if (onvif == null) {
-        print('Motion Detection: Falling back to polling method for ${camera.name}');
-        _startMotionPolling(camera, config);
-        return;
-      }
-
-      // Tentar usar ONVIF Events para detecção em tempo real
-      try {
-        await _subscribeToMotionEvents(onvif, camera, config);
-        print('Motion Detection: Real-time events subscribed for ${camera.name}');
-      } catch (e) {
-        print('Motion Detection: Events subscription failed, using polling: $e');
-        _startMotionPolling(camera, config);
+      if (response != null && response['Ret'] == 100) {
+        _configs[cameraId] = config;
+        
+        if (config.enabled) {
+          _startMotionDetection(cameraId);
+        } else {
+          _stopMotionDetection(cameraId);
+        }
+        
+        print('Detecção de movimento configurada para câmera $cameraId');
+        return true;
+      } else {
+        print('Falha ao configurar detecção de movimento: ${response?['Error'] ?? 'Erro desconhecido'}');
+        return false;
       }
     } catch (e) {
-      print('Motion Detection Error: $e');
-      _startMotionPolling(camera, config);
+      print('Erro ao configurar detecção de movimento para câmera $cameraId: $e');
+      return false;
     }
   }
 
-  /// Conecta ao dispositivo ONVIF
-  Future<Onvif?> _connectToOnvif(String host, String user, String pass) async {
-    final portsToTry = <int>[80, 8080, 8000, 8899, 2020];
+  /// Habilita detecção de movimento
+  Future<bool> enableMotionDetection(String cameraId) async {
+    final config = _configs[cameraId];
+    if (config == null) {
+      print('Configuração de detecção de movimento não encontrada para câmera $cameraId');
+      return false;
+    }
+
+    final updatedConfig = config.copyWith(enabled: true);
+    return await configureMotionDetection(cameraId, updatedConfig);
+  }
+
+  /// Desabilita detecção de movimento
+  Future<bool> disableMotionDetection(String cameraId) async {
+    final config = _configs[cameraId];
+    if (config == null) {
+      print('Configuração de detecção de movimento não encontrada para câmera $cameraId');
+      return false;
+    }
+
+    final updatedConfig = config.copyWith(enabled: false);
+    return await configureMotionDetection(cameraId, updatedConfig);
+  }
+
+  /// Inicia detecção de movimento para uma câmera
+  Future<bool> startMotionDetection(CameraModel camera) async {
+    return await enableMotionDetection(camera.id.toString());
+  }
+
+  /// Para detecção de movimento para uma câmera
+  void stopMotionDetection(String cameraId) {
+    _stopMotionDetection(cameraId);
+  }
+
+  /// Stream de eventos de movimento
+  Stream<MotionEvent>? get motionStream {
+    // Retorna um stream combinado de todos os eventos de movimento
+    if (_motionStreams.isEmpty) return null;
     
-    for (final port in portsToTry) {
-      try {
-        final onvif = await Onvif.connect(
-          host: '$host:$port',
-          username: user,
-          password: pass,
-        ).timeout(_connectionTimeout);
-        return onvif;
-      } catch (error) {
-        continue;
+    final streams = _motionStreams.values.map((controller) => controller.stream).toList();
+    if (streams.isEmpty) return null;
+    if (streams.length == 1) return streams.first;
+    
+    return StreamGroup.merge(streams);
+  }
+
+  /// Inicia monitoramento de detecção de movimento
+  void _startMotionDetection(String cameraId) {
+    // Para timer anterior se existir
+    _detectionTimers[cameraId]?.cancel();
+    
+    // Cria stream de eventos se não existir
+    if (_motionStreams[cameraId] == null) {
+      _motionStreams[cameraId] = StreamController<MotionEvent>.broadcast();
+    }
+
+    // Inicia polling de eventos de movimento
+    _detectionTimers[cameraId] = Timer.periodic(
+      const Duration(seconds: 1),
+      (timer) => _checkMotionEvents(cameraId),
+    );
+
+    print('Detecção de movimento iniciada para câmera $cameraId');
+  }
+
+  /// Para monitoramento de detecção de movimento
+  void _stopMotionDetection(String cameraId) {
+    _detectionTimers[cameraId]?.cancel();
+    _detectionTimers.remove(cameraId);
+    print('Detecção de movimento parada para câmera $cameraId');
+  }
+
+  /// Verifica eventos de movimento
+  Future<void> _checkMotionEvents(String cameraId) async {
+    try {
+      final command = {
+        'Command': 'GET_MOTION_EVENTS',
+        'Since': _lastMotionDetected[cameraId]?.millisecondsSinceEpoch ?? 
+                (DateTime.now().subtract(const Duration(minutes: 1)).millisecondsSinceEpoch),
+        'Timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
+
+      final response = await _cameraService.sendCommand(cameraId, command);
+      
+      if (response != null && response['Ret'] == 100) {
+        final events = response['Events'] as List? ?? [];
+        
+        for (final eventData in events) {
+          final motionEvent = _parseMotionEvent(cameraId, eventData);
+          if (motionEvent != null) {
+            _processMotionEvent(cameraId, motionEvent);
+          }
+        }
       }
+    } catch (e) {
+      print('Erro ao verificar eventos de movimento para câmera $cameraId: $e');
+    }
+  }
+
+  /// Processa evento de movimento
+  void _processMotionEvent(String cameraId, MotionEvent event) {
+    _lastMotionDetected[cameraId] = event.timestamp;
+    
+    // Adiciona ao stream
+    _motionStreams[cameraId]?.add(event);
+    
+    // Log do evento
+    print('Movimento detectado na câmera $cameraId: ${event.confidence}% de confiança');
+    
+    // Processa ações automáticas se configuradas
+    _processAutomaticActions(cameraId, event);
+  }
+
+  /// Processa ações automáticas baseadas no evento
+  void _processAutomaticActions(String cameraId, MotionEvent event) {
+    final config = _configs[cameraId];
+    if (config == null) return;
+
+    // Implementar ações automáticas como:
+    // - Enviar notificação
+    // - Iniciar gravação
+    // - Capturar snapshot
+    // - Ativar alarme
+    
+    // Exemplo: Log de ação automática
+    if (event.confidence >= config.threshold) {
+      print('Ação automática ativada para câmera $cameraId - Confiança: ${event.confidence}%');
+    }
+  }
+
+  /// Converte dados do evento em MotionEvent
+  MotionEvent? _parseMotionEvent(String cameraId, Map<String, dynamic> eventData) {
+    try {
+      return MotionEvent(
+        id: eventData['Id'] ?? _generateEventId(),
+        cameraId: cameraId,
+        timestamp: DateTime.fromMillisecondsSinceEpoch(
+          eventData['Timestamp'] ?? DateTime.now().millisecondsSinceEpoch,
+        ),
+        confidence: (eventData['Confidence'] ?? 0.0).toDouble(),
+        boundingBoxes: (eventData['BoundingBoxes'] as List? ?? [])
+            .map((box) => MotionBoundingBox(
+                  x: (box['x'] ?? 0.0).toDouble(),
+                  y: (box['y'] ?? 0.0).toDouble(),
+                  width: (box['width'] ?? 0.0).toDouble(),
+                  height: (box['height'] ?? 0.0).toDouble(),
+                  confidence: (box['confidence'] ?? 0.0).toDouble(),
+                ))
+            .toList(),
+        detectionZones: (eventData['DetectionZones'] as List? ?? [])
+            .map((zone) => zone.toString())
+            .toList(),
+        metadata: Map<String, dynamic>.from(eventData['Metadata'] ?? {}),
+      );
+    } catch (e) {
+      print('Erro ao converter evento de movimento: $e');
+      return null;
+    }
+  }
+
+  /// Gera ID único para evento
+  String _generateEventId() {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final random = Random().nextInt(10000);
+    return '${timestamp}_$random';
+  }
+
+  /// Obtém configuração atual de detecção de movimento
+  MotionDetectionConfig? getMotionDetectionConfig(String cameraId) {
+    return _configs[cameraId];
+  }
+
+  /// Obtém stream de eventos de movimento
+  Stream<MotionEvent>? getMotionEventStream(String cameraId) {
+    return _motionStreams[cameraId]?.stream;
+  }
+
+  /// Verifica se detecção de movimento está ativa
+  bool isMotionDetectionActive(String cameraId) {
+    final config = _configs[cameraId];
+    return config?.enabled == true && _detectionTimers[cameraId] != null;
+  }
+
+  /// Obtém último evento de movimento
+  DateTime? getLastMotionDetected(String cameraId) {
+    return _lastMotionDetected[cameraId];
+  }
+
+  /// Configura zonas de detecção
+  Future<bool> configureDetectionZones(
+    String cameraId,
+    List<MotionZone> zones,
+  ) async {
+    try {
+      final command = {
+        'Command': 'SET_DETECTION_ZONES',
+        'Zones': zones.map((zone) => {
+          'id': zone.id,
+          'name': zone.name,
+          'points': zone.points.map((point) => {
+            'x': point.x,
+            'y': point.y,
+          }).toList(),
+          'sensitivity': zone.sensitivity,
+          'enabled': zone.enabled,
+        }).toList(),
+        'Timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
+
+      final response = await _cameraService.sendCommand(cameraId, command);
+      
+      if (response != null && response['Ret'] == 100) {
+        _detectionZones[cameraId] = zones;
+        print('Zonas de detecção configuradas para câmera $cameraId');
+        return true;
+      } else {
+        print('Falha ao configurar zonas de detecção: ${response?['Error'] ?? 'Erro desconhecido'}');
+        return false;
+      }
+    } catch (e) {
+      print('Erro ao configurar zonas de detecção para câmera $cameraId: $e');
+      return false;
+    }
+  }
+
+  /// Obtém zonas de detecção configuradas
+  List<MotionZone> getDetectionZones(String cameraId) {
+    return _detectionZones[cameraId] ?? [];
+  }
+
+  /// Testa detecção de movimento
+  Future<bool> testMotionDetection(String cameraId) async {
+    try {
+      final command = {
+        'Command': 'TEST_MOTION_DETECTION',
+        'Timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
+
+      final response = await _cameraService.sendCommand(cameraId, command);
+      return response != null && response['Ret'] == 100;
+    } catch (e) {
+      print('Erro ao testar detecção de movimento para câmera $cameraId: $e');
+      return false;
+    }
+  }
+
+  /// Obtém estatísticas de detecção de movimento
+  Future<MotionDetectionStats?> getMotionDetectionStats(String cameraId) async {
+    try {
+      final command = {
+        'Command': 'GET_MOTION_STATS',
+        'Period': '24h', // Últimas 24 horas
+        'Timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
+
+      final response = await _cameraService.sendCommand(cameraId, command);
+      
+      if (response != null && response['Ret'] == 100) {
+        return MotionDetectionStats(
+          totalEvents: response['TotalEvents'] ?? 0,
+          eventsToday: response['EventsToday'] ?? 0,
+          averageConfidence: (response['AverageConfidence'] ?? 0.0).toDouble(),
+          lastEventTime: response['LastEventTime'] != null
+              ? DateTime.fromMillisecondsSinceEpoch(response['LastEventTime'])
+              : null,
+          detectionRate: (response['DetectionRate'] ?? 0.0).toDouble(),
+          falsePositiveRate: (response['FalsePositiveRate'] ?? 0.0).toDouble(),
+        );
+      }
+    } catch (e) {
+      print('Erro ao obter estatísticas de detecção de movimento para câmera $cameraId: $e');
     }
     
     return null;
   }
 
-  /// Subscreve a eventos de movimento ONVIF
-  Future<void> _subscribeToMotionEvents(Onvif onvif, CameraData camera, MotionDetectionConfig config) async {
+  /// Limpa histórico de eventos
+  Future<bool> clearMotionHistory(String cameraId) async {
     try {
-      // Obter propriedades de eventos disponíveis
-      // final eventProperties = await onvif.events.getEventProperties().timeout(_commandTimeout);
-      print('Motion Detection: Available events for ${camera.name}');
-      
-      // Criar subscription para eventos de movimento
-      // Nota: A implementação específica depende da versão do easy_onvif
-      // Por enquanto, usar polling como fallback
-      throw UnimplementedError('ONVIF Events subscription not yet implemented in easy_onvif');
-    } catch (e) {
-      throw Exception('Failed to subscribe to motion events: $e');
-    }
-  }
+      final command = {
+        'Command': 'CLEAR_MOTION_HISTORY',
+        'Timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
 
-  /// Método de polling para detecção de movimento (fallback)
-  void _startMotionPolling(CameraData camera, MotionDetectionConfig config) {
-    // Polling a cada 5 segundos para verificar movimento
-    _motionTimers[camera.id] = Timer.periodic(
-      const Duration(seconds: 5),
-      (timer) => _checkMotionViaPolling(camera, config),
-    );
-  }
-
-  /// Verifica movimento via polling (método alternativo)
-  Future<void> _checkMotionViaPolling(CameraData camera, MotionDetectionConfig config) async {
-    try {
-      // Implementar verificação via análise de frames ou API específica do fabricante
-      // Por enquanto, usar detecção baseada em timestamp para demonstração
-      final now = DateTime.now();
+      final response = await _cameraService.sendCommand(cameraId, command);
       
-      // Simular detecção baseada em padrões mais realistas
-      if (_shouldDetectMotion(now, config)) {
-        final confidence = _calculateConfidence(config);
-        _motionController.add(MotionEvent(
-          cameraId: camera.id,
-          timestamp: now,
-          confidence: confidence,
-          zones: config.zones.where((z) => z.isEnabled).map((z) => z.id).toList(),
-          boundingBox: _generateRealisticBoundingBox(),
-        ));
-        print('Motion Detection: Motion detected on ${camera.name} (${confidence}% confidence)');
+      if (response != null && response['Ret'] == 100) {
+        _lastMotionDetected.remove(cameraId);
+        return true;
       }
     } catch (e) {
-      print('Motion Detection Error during polling: $e');
+      print('Erro ao limpar histórico de movimento para câmera $cameraId: $e');
     }
-  }
-
-  /// Determina se deve detectar movimento baseado em configurações
-  bool _shouldDetectMotion(DateTime now, MotionDetectionConfig config) {
-    // Lógica mais inteligente baseada na sensibilidade
-    final sensitivityFactor = config.sensitivity / 100.0;
-    final randomFactor = Random().nextDouble();
     
-    // Maior sensibilidade = maior chance de detecção
-    return randomFactor < (sensitivityFactor * 0.3); // 0-30% chance baseada na sensibilidade
+    return false;
   }
 
-  /// Calcula confiança baseada na configuração
-  int _calculateConfidence(MotionDetectionConfig config) {
-    final baseFactor = config.sensitivity;
-    final randomVariation = Random().nextInt(20) - 10; // ±10%
-    return (baseFactor + randomVariation).clamp(50, 99);
-  }
-
-  /// Gera bounding box mais realista
-  MotionBoundingBox _generateRealisticBoundingBox() {
-    final random = Random();
-    return MotionBoundingBox(
-      x: 0.1 + random.nextDouble() * 0.6, // 10-70% da largura
-      y: 0.1 + random.nextDouble() * 0.6, // 10-70% da altura
-      width: 0.1 + random.nextDouble() * 0.3, // 10-40% da largura
-      height: 0.1 + random.nextDouble() * 0.3, // 10-40% da altura
-    );
-  }
-
-  /// Obtém configuração de detecção de movimento para uma câmera
-  Future<MotionDetectionConfig> getMotionDetectionConfig(int cameraId) async {
-    final config = _configs[cameraId.toString()];
-    if (config != null) {
-      return config;
-    }
-    return createDefaultConfig(cameraId.toString());
-  }
-
-  /// Configura detecção de movimento para uma câmera
-  Future<bool> configureMotionDetection(CameraData camera, MotionDetectionConfig config) async {
-    try {
-      final user = camera.username?.trim() ?? '';
-      final pass = camera.password?.trim() ?? '';
-      if (user.isEmpty || pass.isEmpty) {
-        print('Motion Detection Error: Missing ONVIF credentials for ${camera.name}');
-        return false;
-      }
-
-      final uri = Uri.tryParse(camera.streamUrl);
-      if (uri == null) return false;
-      
-      final host = uri.host;
-      if (host.isEmpty) return false;
-
-      print('Motion Detection: Configuring for ${camera.name} at $host');
-
-      // Conectar ao dispositivo ONVIF
-      final portsToTry = <int>[80, 8080, 8000, 8899];
-      Onvif? onvif;
-      
-      for (final port in portsToTry) {
-        try {
-          onvif = await Onvif.connect(
-            host: '$host:$port',
-            username: user,
-            password: pass,
-          ).timeout(_connectionTimeout);
-          print('Motion Detection: Connected to $host:$port');
-          break;
-        } catch (error) {
-          print('Motion Detection: Failed to connect to $host:$port -> $error');
-          continue;
-        }
-      }
-
-      if (onvif == null) {
-        print('Motion Detection Error: Could not connect to ONVIF service for $host');
-        return false;
-      }
-
-      // Obter perfis de mídia
-      final profiles = await onvif.media.getProfiles().timeout(_commandTimeout);
-      if (profiles.isEmpty) {
-        print('Motion Detection Error: No media profiles found on device $host');
-        return false;
-      }
-
-      final profileToken = profiles.first.token;
-      print('Motion Detection: Using profile token: $profileToken');
-
-      // Tentar configurar via analytics
-      try {
-        await _configureAnalytics(onvif, profileToken, config);
-        print('Motion Detection: Analytics configuration successful');
-      } catch (e) {
-        print('Motion Detection Warning: Analytics configuration failed: $e');
-      }
-
-      // Tentar configurar via video analytics
-      try {
-        await _configureVideoAnalytics(onvif, profileToken, config);
-        print('Motion Detection: Video analytics configuration successful');
-      } catch (e) {
-        print('Motion Detection Warning: Video analytics configuration failed: $e');
-      }
-
-      // Salvar configuração localmente
-      _configs[camera.id.toString()] = config;
-      _configsController.add(_configs);
-      
-      print('Motion Detection: Configuration saved for ${camera.name}');
-      return true;
-    } catch (e) {
-      print('Motion Detection Error: Exception configuring motion detection: $e');
-      return false;
-    }
-  }
-
-  /// Configura analytics ONVIF
-  Future<void> _configureAnalytics(Onvif onvif, String profileToken, MotionDetectionConfig config) async {
-    try {
-      // TODO: Implementar analytics quando disponível na versão do easy_onvif
-      // A funcionalidade de analytics não está disponível na versão atual
-      print('Analytics configuration skipped - not available in current ONVIF version');
-      
-      // Configuração alternativa usando eventos ONVIF básicos
-      // final events = await onvif.events.getEventProperties();
-      // print('Available events: $events');
-      
-    } catch (e) {
-      print('Analytics configuration failed: $e');
-      // Não lançar exceção para não interromper o fluxo
-    }
-  }
-
-  /// Configura video analytics
-  Future<void> _configureVideoAnalytics(Onvif onvif, String profileToken, MotionDetectionConfig config) async {
-    try {
-      // Implementação para video analytics
-      // Diferentes fabricantes podem ter implementações específicas
-      print('Motion Detection: Configuring video analytics (manufacturer-specific)');
-      
-      // Configuração genérica baseada em padrões ONVIF
-      final videoAnalyticsConfig = VideoAnalyticsConfiguration(
-        token: 'motion_config_${DateTime.now().millisecondsSinceEpoch}',
-        name: 'Motion Detection Config',
-        useCount: 1,
-        analyticsEngineConfiguration: AnalyticsEngineConfiguration(
-          analyticsModules: config.zones.where((z) => z.isEnabled).map((zone) => 
-            AnalyticsModule(
-              name: zone.name,
-              type: zone.isExclusionZone ? 'tt:ExclusionZone' : 'tt:CellMotionDetector',
-              parameters: {
-                'Sensitivity': zone.sensitivity / 100.0,
-                'MinSize': config.minObjectSize,
-                'MaxSize': config.maxObjectSize,
-                'HumanDetection': config.humanDetectionOnly,
-              },
-            )
-          ).toList(),
-        ),
-      );
-      
-      // Aplicar configuração (método específico do fabricante)
-      print('Motion Detection: Video analytics configuration prepared');
-    } catch (e) {
-      throw Exception('Failed to configure video analytics: $e');
-    }
-  }
-
-  /// Converte pontos em string de polígono
-  String _convertPointsToPolygon(List<Point<double>> points) {
-    return points.map((p) => '${p.x},${p.y}').join(' ');
-  }
-
-  /// Habilita/desabilita detecção de movimento
-  Future<bool> toggleMotionDetection(String cameraId, bool enabled) async {
+  /// Obtém status da detecção de movimento
+  Map<String, dynamic> getMotionDetectionStatus(String cameraId) {
     final config = _configs[cameraId];
-    if (config == null) {
-      print('Motion Detection Error: No configuration found for camera $cameraId');
-      return false;
-    }
-
-    final updatedConfig = config.copyWith(enabled: enabled);
-    _configs[cameraId] = updatedConfig;
-    _configsController.add(_configs);
+    final isActive = isMotionDetectionActive(cameraId);
+    final lastMotion = getLastMotionDetected(cameraId);
     
-    print('Motion Detection: ${enabled ? 'Enabled' : 'Disabled'} for camera $cameraId');
-    return true;
+    return {
+      'enabled': config?.enabled ?? false,
+      'active': isActive,
+      'sensitivity': config?.sensitivity ?? 50,
+      'threshold': config?.threshold ?? 70.0,
+      'lastMotionDetected': lastMotion?.toIso8601String(),
+      'timeSinceLastMotion': lastMotion != null
+          ? DateTime.now().difference(lastMotion).inSeconds
+          : null,
+      'detectionZones': getDetectionZones(cameraId).length,
+    };
   }
 
-  /// Adiciona uma zona de detecção
-  void addDetectionZone(String cameraId, MotionDetectionZone zone) {
-    final config = _configs[cameraId];
-    if (config != null) {
-      final updatedZones = List<MotionDetectionZone>.from(config.zones);
-      updatedZones.add(zone);
-      
-      _configs[cameraId] = config.copyWith(zones: updatedZones);
-      _configsController.add(_configs);
-      
-      print('Motion Detection: Added zone ${zone.name} to camera $cameraId');
-    }
-  }
-
-  /// Remove uma zona de detecção
-  void removeDetectionZone(String cameraId, String zoneId) {
-    final config = _configs[cameraId];
-    if (config != null) {
-      final updatedZones = config.zones.where((z) => z.id != zoneId).toList();
-      
-      _configs[cameraId] = config.copyWith(zones: updatedZones);
-      _configsController.add(_configs);
-      
-      print('Motion Detection: Removed zone $zoneId from camera $cameraId');
-    }
-  }
-
-  /// Atualiza uma zona de detecção
-  void updateDetectionZone(String cameraId, MotionDetectionZone updatedZone) {
-    final config = _configs[cameraId];
-    if (config != null) {
-      final updatedZones = config.zones.map((z) => 
-        z.id == updatedZone.id ? updatedZone : z
-      ).toList();
-      
-      _configs[cameraId] = config.copyWith(zones: updatedZones);
-      _configsController.add(_configs);
-      
-      print('Motion Detection: Updated zone ${updatedZone.name} for camera $cameraId');
-    }
-  }
-
-  /// Obtém configuração atual
-  MotionDetectionConfig? getConfig(String cameraId) {
-    return _configs[cameraId];
-  }
-
-  /// Salva configuração de detecção de movimento
-  Future<void> saveMotionDetectionConfig(String cameraId, MotionDetectionConfig config) async {
-    _configs[cameraId] = config;
-    _configsController.add(_configs);
-    print('Motion Detection: Configuration saved for camera $cameraId');
-  }
-
-  /// Cria configuração padrão
-  MotionDetectionConfig createDefaultConfig(String cameraId) {
-    return MotionDetectionConfig(
-      cameraId: cameraId,
-      enabled: false,
-      sensitivity: 50,
-      humanDetectionOnly: true,
-      minObjectSize: 0.1,
-      maxObjectSize: 1.0,
-      zones: [
-        MotionDetectionZone(
-          id: 'default_zone',
-          name: 'Área Principal',
-          points: [
-            const Offset(0.1, 0.1),
-            const Offset(0.9, 0.1),
-            const Offset(0.9, 0.9),
-            const Offset(0.1, 0.9),
-          ],
-          isEnabled: true,
-          isExclusionZone: false,
-          sensitivity: 0.5,
-        ),
-      ],
-    );
-  }
-
-  /// Dispose resources
+  /// Dispose do serviço
   void dispose() {
-    _configsController.close();
-    _motionController.close();
-    for (final timer in _motionTimers.values) {
-      timer.cancel();
+    // Para todos os timers
+    for (final timer in _detectionTimers.values) {
+      timer?.cancel();
     }
-    _motionTimers.clear();
+    _detectionTimers.clear();
+    
+    // Fecha todos os streams
+    for (final stream in _motionStreams.values) {
+      stream.close();
+    }
+    _motionStreams.clear();
+    
+    _configs.clear();
+    _lastMotionDetected.clear();
+    _detectionZones.clear();
   }
 }
 
-/// Configuração de detecção de movimento
+/// Classe para representar configuração de detecção de movimento
 class MotionDetectionConfig {
-  final String cameraId;
   final bool enabled;
   final int sensitivity; // 0-100
-  final bool humanDetectionOnly;
-  final double minObjectSize; // 0.0-1.0
-  final double maxObjectSize; // 0.0-1.0
-  final List<MotionDetectionZone> zones;
+  final double threshold; // 0.0-100.0
+  final int minObjectSize;
+  final int maxObjectSize;
+  final List<MotionDetectionArea> detectionAreas;
+  final List<MotionDetectionSchedule>? schedule;
 
   const MotionDetectionConfig({
-    required this.cameraId,
     required this.enabled,
     required this.sensitivity,
-    required this.humanDetectionOnly,
-    required this.minObjectSize,
-    required this.maxObjectSize,
-    required this.zones,
+    required this.threshold,
+    this.minObjectSize = 50,
+    this.maxObjectSize = 5000,
+    this.detectionAreas = const [],
+    this.schedule,
   });
 
   MotionDetectionConfig copyWith({
-    String? cameraId,
     bool? enabled,
     int? sensitivity,
-    bool? humanDetectionOnly,
-    double? minObjectSize,
-    double? maxObjectSize,
-    List<MotionDetectionZone>? zones,
+    double? threshold,
+    int? minObjectSize,
+    int? maxObjectSize,
+    List<MotionDetectionArea>? detectionAreas,
+    List<MotionDetectionSchedule>? schedule,
   }) {
     return MotionDetectionConfig(
-      cameraId: cameraId ?? this.cameraId,
       enabled: enabled ?? this.enabled,
       sensitivity: sensitivity ?? this.sensitivity,
-      humanDetectionOnly: humanDetectionOnly ?? this.humanDetectionOnly,
+      threshold: threshold ?? this.threshold,
       minObjectSize: minObjectSize ?? this.minObjectSize,
       maxObjectSize: maxObjectSize ?? this.maxObjectSize,
-      zones: zones ?? this.zones,
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    return {
-      'cameraId': cameraId,
-      'enabled': enabled,
-      'sensitivity': sensitivity,
-      'humanDetectionOnly': humanDetectionOnly,
-      'minObjectSize': minObjectSize,
-      'maxObjectSize': maxObjectSize,
-      'zones': zones.map((z) => z.toJson()).toList(),
-    };
-  }
-
-  factory MotionDetectionConfig.fromJson(Map<String, dynamic> json) {
-    return MotionDetectionConfig(
-      cameraId: json['cameraId'] ?? '',
-      enabled: json['enabled'] ?? false,
-      sensitivity: json['sensitivity'] ?? 50,
-      humanDetectionOnly: json['humanDetectionOnly'] ?? true,
-      minObjectSize: (json['minObjectSize'] ?? 0.1).toDouble(),
-      maxObjectSize: (json['maxObjectSize'] ?? 1.0).toDouble(),
-      zones: (json['zones'] as List<dynamic>? ?? [])
-          .map((z) => MotionDetectionZone.fromJson(z))
-          .toList(),
+      detectionAreas: detectionAreas ?? this.detectionAreas,
+      schedule: schedule ?? this.schedule,
     );
   }
 }
 
-/// Classes auxiliares para ONVIF Analytics
-class AnalyticsRule {
-  final String name;
-  final String type;
-  final Map<String, String> parameters;
+/// Classe para representar área de detecção
+class MotionDetectionArea {
+  final double x;
+  final double y;
+  final double width;
+  final double height;
+  final bool enabled;
 
-  const AnalyticsRule({
-    required this.name,
-    required this.type,
-    required this.parameters,
+  const MotionDetectionArea({
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.height,
+    this.enabled = true,
   });
 }
 
-class VideoAnalyticsConfiguration {
-  final String token;
-  final String name;
-  final int useCount;
-  final AnalyticsEngineConfiguration analyticsEngineConfiguration;
+/// Classe para representar agendamento de detecção
+class MotionDetectionSchedule {
+  final int dayOfWeek; // 0-6 (domingo-sábado)
+  final String startTime; // HH:mm
+  final String endTime; // HH:mm
+  final bool enabled;
 
-  const VideoAnalyticsConfiguration({
-    required this.token,
-    required this.name,
-    required this.useCount,
-    required this.analyticsEngineConfiguration,
+  const MotionDetectionSchedule({
+    required this.dayOfWeek,
+    required this.startTime,
+    required this.endTime,
+    this.enabled = true,
   });
 }
 
-class AnalyticsEngineConfiguration {
-  final List<AnalyticsModule> analyticsModules;
-
-  const AnalyticsEngineConfiguration({
-    required this.analyticsModules,
-  });
-}
-
-class AnalyticsModule {
-  final String name;
-  final String type;
-  final Map<String, dynamic> parameters;
-
-  const AnalyticsModule({
-    required this.name,
-    required this.type,
-    required this.parameters,
-  });
-}
-
-/// Evento de movimento detectado
+/// Classe para representar evento de movimento
 class MotionEvent {
-  final int cameraId;
+  final String id;
+  final String cameraId;
   final DateTime timestamp;
-  final int confidence; // 0-100
-  final List<String> zones;
-  final MotionBoundingBox? boundingBox;
+  final double confidence;
+  final List<MotionBoundingBox> boundingBoxes;
+  final List<String> detectionZones;
+  final Map<String, dynamic> metadata;
 
   const MotionEvent({
+    required this.id,
     required this.cameraId,
     required this.timestamp,
     required this.confidence,
-    required this.zones,
-    this.boundingBox,
+    this.boundingBoxes = const [],
+    this.detectionZones = const [],
+    this.metadata = const {},
   });
-
-  Map<String, dynamic> toJson() {
-    return {
-      'cameraId': cameraId,
-      'timestamp': timestamp.toIso8601String(),
-      'confidence': confidence,
-      'zones': zones,
-      'boundingBox': boundingBox?.toJson(),
-    };
-  }
-
-  factory MotionEvent.fromJson(Map<String, dynamic> json) {
-    return MotionEvent(
-      cameraId: json['cameraId'] ?? 0,
-      timestamp: DateTime.parse(json['timestamp'] ?? DateTime.now().toIso8601String()),
-      confidence: json['confidence'] ?? 0,
-      zones: List<String>.from(json['zones'] ?? []),
-      boundingBox: json['boundingBox'] != null 
-          ? MotionBoundingBox.fromJson(json['boundingBox']) 
-          : null,
-    );
-  }
 }
 
-/// Caixa delimitadora do movimento detectado
+/// Classe para representar bounding box de movimento
 class MotionBoundingBox {
-  final double x; // 0.0-1.0 (posição relativa)
-  final double y; // 0.0-1.0 (posição relativa)
-  final double width; // 0.0-1.0 (tamanho relativo)
-  final double height; // 0.0-1.0 (tamanho relativo)
+  final double x;
+  final double y;
+  final double width;
+  final double height;
+  final double confidence;
 
   const MotionBoundingBox({
     required this.x,
     required this.y,
     required this.width,
     required this.height,
+    required this.confidence,
   });
+}
 
-  Map<String, dynamic> toJson() {
-    return {
-      'x': x,
-      'y': y,
-      'width': width,
-      'height': height,
-    };
-  }
+/// Classe para representar zona de detecção
+class MotionZone {
+  final String id;
+  final String name;
+  final List<MotionPoint> points;
+  final int sensitivity;
+  final bool enabled;
 
-  factory MotionBoundingBox.fromJson(Map<String, dynamic> json) {
-    return MotionBoundingBox(
-      x: (json['x'] ?? 0.0).toDouble(),
-      y: (json['y'] ?? 0.0).toDouble(),
-      width: (json['width'] ?? 0.0).toDouble(),
-      height: (json['height'] ?? 0.0).toDouble(),
-    );
-  }
+  const MotionZone({
+    required this.id,
+    required this.name,
+    required this.points,
+    this.sensitivity = 50,
+    this.enabled = true,
+  });
+}
+
+/// Classe para representar ponto de zona
+class MotionPoint {
+  final double x;
+  final double y;
+
+  const MotionPoint({
+    required this.x,
+    required this.y,
+  });
+}
+
+/// Classe para representar estatísticas de detecção
+class MotionDetectionStats {
+  final int totalEvents;
+  final int eventsToday;
+  final double averageConfidence;
+  final DateTime? lastEventTime;
+  final double detectionRate;
+  final double falsePositiveRate;
+
+  const MotionDetectionStats({
+    required this.totalEvents,
+    required this.eventsToday,
+    required this.averageConfidence,
+    this.lastEventTime,
+    required this.detectionRate,
+    required this.falsePositiveRate,
+  });
 }

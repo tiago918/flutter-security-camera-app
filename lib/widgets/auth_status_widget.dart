@@ -243,7 +243,7 @@ class RestrictedFeatureWidget extends StatelessWidget {
     return Positioned.fill(
       child: Container(
         decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.45),
+          color: Colors.black.withValues(alpha: 0.45),
           borderRadius: BorderRadius.circular(12),
         ),
         child: Center(
@@ -279,7 +279,7 @@ class RestrictedFeatureWidget extends StatelessWidget {
                   foregroundColor: Colors.black,
                 ),
                 icon: const Icon(Icons.login),
-                label: const Text('Entrar para desbloquear'),
+                label: const Text('Fazer Login'),
               ),
             ],
           ),

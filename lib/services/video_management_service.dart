@@ -245,12 +245,6 @@ class VideoManagementService {
   /// Gera thumbnail para um vídeo (placeholder - implementar com FFmpeg)
   Future<String?> _getThumbnailPath(String videoPath) async {
     try {
-      final thumbnailsDir = await _getThumbnailsDirectory();
-      final videoFile = File(videoPath);
-      final filename = videoFile.path.split(Platform.pathSeparator).last;
-      final thumbnailFilename = '${filename.split('.').first}_thumb.jpg';
-      final thumbnailPath = '${thumbnailsDir.path}${Platform.pathSeparator}$thumbnailFilename';
-      
       // TODO: Implementar geração real de thumbnail com FFmpeg
       // Por enquanto, retornar null (sem thumbnail)
       return null;
@@ -273,16 +267,7 @@ class VideoManagementService {
   }
 
   /// Obtém diretório de thumbnails
-  Future<Directory> _getThumbnailsDirectory() async {
-    final appDir = await getApplicationDocumentsDirectory();
-    final thumbnailsDir = Directory('${appDir.path}/camera_thumbnails');
-    
-    if (!await thumbnailsDir.exists()) {
-      await thumbnailsDir.create(recursive: true);
-    }
-    
-    return thumbnailsDir;
-  }
+
 
   /// Exporta vídeo para galeria do dispositivo
   Future<bool> exportVideoToGallery(String videoId) async {

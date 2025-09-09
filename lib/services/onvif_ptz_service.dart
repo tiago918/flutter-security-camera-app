@@ -1,12 +1,19 @@
+import 'dart:async';
 import 'package:easy_onvif/onvif.dart';
 import 'package:easy_onvif/shared.dart';
 import '../models/camera_models.dart';
+import 'unified_onvif_service.dart';
 
 class OnvifPtzService {
-  const OnvifPtzService();
+  static final OnvifPtzService _instance = OnvifPtzService._internal();
+  factory OnvifPtzService() => _instance;
+  OnvifPtzService._internal();
+
+  final Map<String, dynamic> _profileCache = {};
+  final UnifiedOnvifService _unifiedService = UnifiedOnvifService();
   
-  static const Duration _connectionTimeout = Duration(seconds: 5);
-  static const Duration _commandTimeout = Duration(seconds: 2);
+  static const Duration _connectionTimeout = Duration(seconds: 10);
+  static const Duration _commandTimeout = Duration(seconds: 5);
   static final Map<String, Onvif> _onvifCache = {};
   static final Map<String, String> _profileTokenCache = {};
   static final Map<String, String> _endpointCache = {};
@@ -31,6 +38,184 @@ class OnvifPtzService {
       return;
     }
     await _getOrConnectOnvif(host, user, pass);
+  }
+
+  /// Move a câmera continuamente em uma direção
+  Future<bool> continuousMove(CameraData camera, String direction, {double speed = 0.5}) async {
+    try {
+      // Conectar usando o serviço unificado
+      final connected = await _unifiedService.connect(camera);
+      if (!connected) {
+        print('PTZ Error: Could not connect to camera ${camera.name}');
+        return false;
+      }
+
+      // Mapear direção para parâmetros PTZ
+      final ptzSpeed = _mapDirectionToParameters(direction, speed);
+      if (ptzSpeed == null) {
+        print('PTZ Error: Invalid direction: $direction');
+        return false;
+      }
+
+      // Converter PtzSpeed para Map<String, dynamic>
+      final parameters = <String, dynamic>{
+        'panTilt': ptzSpeed.panTilt != null ? {
+          'x': ptzSpeed.panTilt!.x,
+          'y': ptzSpeed.panTilt!.y,
+        } : null,
+        'zoom': ptzSpeed.zoom != null ? {
+          'x': ptzSpeed.zoom!.x,
+        } : null,
+      };
+
+      // Executar comando PTZ usando o serviço unificado
+      final success = await _unifiedService.ptzControl(
+        camera.id.toString(),
+        'continuous_move',
+        parameters,
+      );
+
+      if (success) {
+        print('PTZ: Continuous move $direction executed for ${camera.name}');
+        return true;
+      }
+
+      // Fallback para conexão ONVIF direta
+      final onvif = _unifiedService.getOnvifConnection(camera.id.toString());
+      if (onvif != null) {
+        return await _executeContinuousMove(onvif, camera, direction, speed);
+      }
+
+      return false;
+    } catch (e) {
+      print('PTZ Error: Failed to execute continuous move: $e');
+      return false;
+    }
+  }
+
+  /// Para todos os movimentos PTZ
+  Future<bool> stop(CameraData camera) async {
+    try {
+      // Conectar usando o serviço unificado
+      final connected = await _unifiedService.connect(camera);
+      if (!connected) {
+        print('PTZ Error: Could not connect to camera ${camera.name}');
+        return false;
+      }
+
+      // Executar comando de parada usando o serviço unificado
+      final success = await _unifiedService.ptzControl(
+        camera.id.toString(),
+        'stop',
+        {'panTilt': true, 'zoom': true},
+      );
+
+      if (success) {
+        print('PTZ: Stop executed for ${camera.name}');
+        return true;
+      }
+
+      // Fallback para conexão ONVIF direta
+      final onvif = _unifiedService.getOnvifConnection(camera.id.toString());
+      if (onvif != null) {
+        return await _executeStop(onvif, camera);
+      }
+
+      return false;
+    } catch (e) {
+      print('PTZ Error: Failed to execute stop: $e');
+      return false;
+    }
+  }
+
+  /// Mapeia direção para parâmetros PTZ
+  PtzSpeed? _mapDirectionToParameters(String direction, double speed) {
+    switch (direction.toLowerCase()) {
+      case 'up':
+        return PtzSpeed(panTilt: Vector2D(x: 0.0, y: speed));
+      case 'down':
+        return PtzSpeed(panTilt: Vector2D(x: 0.0, y: -speed));
+      case 'left':
+        return PtzSpeed(panTilt: Vector2D(x: -speed, y: 0.0));
+      case 'right':
+        return PtzSpeed(panTilt: Vector2D(x: speed, y: 0.0));
+      case 'zoom_in':
+        // Zoom será implementado quando Vector1D estiver disponível
+        return PtzSpeed(panTilt: Vector2D(x: 0.0, y: 0.0));
+      case 'zoom_out':
+        // Zoom será implementado quando Vector1D estiver disponível
+        return PtzSpeed(panTilt: Vector2D(x: 0.0, y: 0.0));
+      default:
+        return null;
+    }
+  }
+
+  /// Executa movimento contínuo usando conexão ONVIF direta
+  Future<bool> _executeContinuousMove(Onvif onvif, CameraData camera, String direction, double speed) async {
+    try {
+      final profile = await _getProfile(onvif, camera);
+      if (profile?.ptzConfiguration == null) {
+        print('PTZ Error: No PTZ configuration found for ${camera.name}');
+        return false;
+      }
+
+      final ptzSpeed = _mapDirectionToParameters(direction, speed);
+      if (ptzSpeed == null) return false;
+
+      await onvif.ptz.continuousMove(
+        profile.token,
+        velocity: ptzSpeed,
+      ).timeout(_commandTimeout);
+
+      return true;
+    } catch (e) {
+      print('PTZ Error: Failed to execute continuous move via ONVIF: $e');
+      return false;
+    }
+  }
+
+  /// Executa parada usando conexão ONVIF direta
+  Future<bool> _executeStop(Onvif onvif, CameraData camera) async {
+    try {
+      final profile = await _getProfile(onvif, camera);
+      if (profile?.ptzConfiguration == null) {
+        print('PTZ Error: No PTZ configuration found for ${camera.name}');
+        return false;
+      }
+
+      await onvif.ptz.stop(
+        profile.token,
+        panTilt: true,
+        zoom: true,
+      ).timeout(_commandTimeout);
+
+      return true;
+    } catch (e) {
+      print('PTZ Error: Failed to execute stop via ONVIF: $e');
+      return false;
+    }
+  }
+
+  /// Obtém perfil PTZ da câmera
+  Future<dynamic> _getProfile(Onvif onvif, CameraData camera) async {
+    try {
+      final cacheKey = camera.id.toString();
+      if (_profileCache.containsKey(cacheKey)) {
+        return _profileCache[cacheKey];
+      }
+
+      final profiles = await onvif.media.getProfiles().timeout(_commandTimeout);
+      final ptzProfile = profiles.firstWhere(
+        (profile) => profile.ptzConfiguration != null,
+        orElse: () => profiles.isNotEmpty ? profiles.first : throw Exception('No profiles found'),
+      );
+
+      _profileCache[cacheKey] = ptzProfile;
+      return ptzProfile;
+    } catch (e) {
+      print('PTZ Error: Failed to get profile: $e');
+      return null;
+    }
   }
 
   Future<bool> executePtzCommand(CameraData camera, String command) async {

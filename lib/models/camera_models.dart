@@ -1,5 +1,155 @@
-import 'package:flutter/material.dart';
 import 'dart:typed_data';
+import 'package:flutter/material.dart';
+import 'package:security_camera_app/models/ptz_models.dart';
+import 'camera_model.dart';
+import 'camera_status.dart';
+
+// Enum para tipos de protocolo suportados
+enum ProtocolType {
+  onvif,
+  proprietary, // DVRIP-Web ou outros protocolos proprietários
+  hybrid // Suporte a ambos os protocolos
+}
+
+// Configuração de portas para comunicação com câmeras
+class CameraPortConfiguration {
+  final int httpPort;
+  final int rtspPort;
+  final int onvifPort;
+  final int proprietaryPort;
+  final int alternativePort;
+  final bool useHttps;
+  final bool acceptSelfSigned;
+  final String preferredProtocol; // 'onvif', 'proprietary', 'rtsp'
+
+  const CameraPortConfiguration({
+    this.httpPort = 80,
+    this.rtspPort = 554,
+    this.onvifPort = 80,
+    this.proprietaryPort = 8000,
+    this.alternativePort = 8899,
+    this.useHttps = false,
+    this.acceptSelfSigned = false,
+    this.preferredProtocol = 'onvif',
+  });
+
+  CameraPortConfiguration copyWith({
+    int? httpPort,
+    int? rtspPort,
+    int? onvifPort,
+    int? proprietaryPort,
+    int? alternativePort,
+    bool? useHttps,
+    bool? acceptSelfSigned,
+    String? preferredProtocol,
+  }) {
+    return CameraPortConfiguration(
+      httpPort: httpPort ?? this.httpPort,
+      rtspPort: rtspPort ?? this.rtspPort,
+      onvifPort: onvifPort ?? this.onvifPort,
+      proprietaryPort: proprietaryPort ?? this.proprietaryPort,
+      alternativePort: alternativePort ?? this.alternativePort,
+      useHttps: useHttps ?? this.useHttps,
+      acceptSelfSigned: acceptSelfSigned ?? this.acceptSelfSigned,
+      preferredProtocol: preferredProtocol ?? this.preferredProtocol,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'httpPort': httpPort,
+        'rtspPort': rtspPort,
+        'onvifPort': onvifPort,
+        'proprietaryPort': proprietaryPort,
+        'alternativePort': alternativePort,
+        'useHttps': useHttps,
+        'acceptSelfSigned': acceptSelfSigned,
+        'preferredProtocol': preferredProtocol,
+      };
+
+  factory CameraPortConfiguration.fromJson(Map<String, dynamic> json) => CameraPortConfiguration(
+        httpPort: json['httpPort'] as int? ?? 80,
+        rtspPort: json['rtspPort'] as int? ?? 554,
+        onvifPort: json['onvifPort'] as int? ?? 80,
+        proprietaryPort: json['proprietaryPort'] as int? ?? 8000,
+        alternativePort: json['alternativePort'] as int? ?? 8899,
+        useHttps: json['useHttps'] as bool? ?? false,
+        acceptSelfSigned: json['acceptSelfSigned'] as bool? ?? false,
+        preferredProtocol: json['preferredProtocol'] as String? ?? 'onvif',
+       );
+
+  // Método para criar configuração padrão para câmeras ONVIF
+  factory CameraPortConfiguration.onvifDefault() => const CameraPortConfiguration(
+        httpPort: 80,
+        onvifPort: 8080,
+        preferredProtocol: 'onvif',
+      );
+
+  // Método para criar configuração padrão para câmeras proprietárias
+  factory CameraPortConfiguration.proprietaryDefault() => const CameraPortConfiguration(
+        httpPort: 80,
+        onvifPort: 8080,
+        proprietaryPort: 34567,
+        preferredProtocol: 'proprietary',
+      );
+
+  // Método para criar configuração híbrida
+  factory CameraPortConfiguration.hybridDefault() => const CameraPortConfiguration(
+        httpPort: 80,
+        onvifPort: 8080,
+        proprietaryPort: 34567,
+        preferredProtocol: 'auto',
+      );
+}
+
+class ProtocolDetectionResult {
+  final bool onvifAvailable;
+  final bool proprietaryAvailable;
+  final bool rtspAvailable;
+  final int? detectedOnvifPort;
+  final int? detectedProprietaryPort;
+  final int? detectedRtspPort;
+  final String? error;
+
+  const ProtocolDetectionResult({
+    this.onvifAvailable = false,
+    this.proprietaryAvailable = false,
+    this.rtspAvailable = false,
+    this.detectedOnvifPort,
+    this.detectedProprietaryPort,
+    this.detectedRtspPort,
+    this.error,
+  });
+
+  bool get hasAnyProtocol => onvifAvailable || proprietaryAvailable || rtspAvailable;
+  
+  List<String> get supportedProtocols {
+    final protocols = <String>[];
+    if (onvifAvailable) protocols.add('onvif');
+    if (proprietaryAvailable) protocols.add('proprietary');
+    if (rtspAvailable) protocols.add('rtsp');
+    return protocols;
+  }
+
+  Map<String, dynamic> toJson() => {
+        'onvifAvailable': onvifAvailable,
+        'proprietaryAvailable': proprietaryAvailable,
+        'rtspAvailable': rtspAvailable,
+        'detectedOnvifPort': detectedOnvifPort,
+        'detectedProprietaryPort': detectedProprietaryPort,
+        'detectedRtspPort': detectedRtspPort,
+        'error': error,
+      };
+
+  factory ProtocolDetectionResult.fromJson(Map<String, dynamic> json) => ProtocolDetectionResult(
+        onvifAvailable: json['onvifAvailable'] as bool? ?? false,
+        proprietaryAvailable: json['proprietaryAvailable'] as bool? ?? false,
+        rtspAvailable: json['rtspAvailable'] as bool? ?? false,
+        detectedOnvifPort: json['detectedOnvifPort'] as int?,
+        detectedProprietaryPort: json['detectedProprietaryPort'] as int?,
+        detectedRtspPort: json['detectedRtspPort'] as int?,
+        error: json['error'] as String?,
+       );
+}
 
 class RecordingInfo {
   final String id;
@@ -70,45 +220,7 @@ class RecordingInfo {
   }
 }
 
-class PtzPosition {
-  final String id;
-  final String name;
-  final double pan;
-  final double tilt;
-  final double zoom;
-  final Uint8List? thumbnail; // Miniatura da posição
-  final DateTime createdAt;
 
-  const PtzPosition({
-    required this.id,
-    required this.name,
-    required this.pan,
-    required this.tilt,
-    required this.zoom,
-    this.thumbnail,
-    required this.createdAt,
-  });
-
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'pan': pan,
-        'tilt': tilt,
-        'zoom': zoom,
-        'thumbnail': thumbnail,
-        'createdAt': createdAt.toIso8601String(),
-      };
-
-  factory PtzPosition.fromJson(Map<String, dynamic> json) => PtzPosition(
-        id: json['id'] as String,
-        name: json['name'] as String,
-        pan: (json['pan'] as num).toDouble(),
-        tilt: (json['tilt'] as num).toDouble(),
-        zoom: (json['zoom'] as num).toDouble(),
-        thumbnail: json['thumbnail'] as Uint8List?,
-        createdAt: DateTime.parse(json['createdAt'] as String),
-      );
-}
 
 class MotionDetectionZone {
   final String id;
@@ -148,97 +260,7 @@ class MotionDetectionZone {
       );
 }
 
-class CameraCapabilities {
-  final bool hasMotionDetection;
-  final bool hasNightVision;
-  final bool hasPTZ;
-  final bool hasAudio;
-  final bool hasEvents;
-  final bool hasRecording;
-  final bool hasNotifications;
-  final bool hasPlayback; // Capacidade de reproduzir gravações do cartão SD
-  final bool hasRecordingSearch; // Capacidade de buscar gravações
-  final bool hasRecordingDownload; // Capacidade de baixar gravações
-  final List<String> availableProfiles;
-  final String? imagingOptions;
-  final DateTime? lastDetected;
-  final List<PtzPosition> ptzPositions;
-  final List<MotionDetectionZone> motionZones;
-  final bool nightModeEnabled;
-  final bool irLightsEnabled;
-  final List<String> supportedRecordingFormats; // Formatos suportados para gravação
-  final bool supportsOnvifProfileG; // Suporte ao ONVIF Profile G (Recording)
-
-  const CameraCapabilities({
-    this.hasMotionDetection = false,
-    this.hasNightVision = false,
-    this.hasPTZ = false,
-    this.hasAudio = false,
-    this.hasEvents = false,
-    this.hasRecording = false,
-    this.hasNotifications = false,
-    this.hasPlayback = false,
-    this.hasRecordingSearch = false,
-    this.hasRecordingDownload = false,
-    this.availableProfiles = const [],
-    this.imagingOptions,
-    this.lastDetected,
-    this.ptzPositions = const [],
-    this.motionZones = const [],
-    this.nightModeEnabled = false,
-    this.irLightsEnabled = false,
-    this.supportedRecordingFormats = const [],
-    this.supportsOnvifProfileG = false,
-  });
-
-  Map<String, dynamic> toJson() => {
-        'hasMotionDetection': hasMotionDetection,
-        'hasNightVision': hasNightVision,
-        'hasPTZ': hasPTZ,
-        'hasAudio': hasAudio,
-        'hasEvents': hasEvents,
-        'hasRecording': hasRecording,
-        'hasNotifications': hasNotifications,
-        'hasPlayback': hasPlayback,
-        'hasRecordingSearch': hasRecordingSearch,
-        'hasRecordingDownload': hasRecordingDownload,
-        'availableProfiles': availableProfiles,
-        'imagingOptions': imagingOptions,
-        'lastDetected': lastDetected?.toIso8601String(),
-        'ptzPositions': ptzPositions.map((p) => p.toJson()).toList(),
-        'motionZones': motionZones.map((z) => z.toJson()).toList(),
-        'nightModeEnabled': nightModeEnabled,
-        'irLightsEnabled': irLightsEnabled,
-        'supportedRecordingFormats': supportedRecordingFormats,
-        'supportsOnvifProfileG': supportsOnvifProfileG,
-      };
-
-  factory CameraCapabilities.fromJson(Map<String, dynamic> json) => CameraCapabilities(
-        hasMotionDetection: json['hasMotionDetection'] as bool? ?? false,
-        hasNightVision: json['hasNightVision'] as bool? ?? false,
-        hasPTZ: json['hasPTZ'] as bool? ?? false,
-        hasAudio: json['hasAudio'] as bool? ?? false,
-        hasEvents: json['hasEvents'] as bool? ?? false,
-        hasRecording: json['hasRecording'] as bool? ?? false,
-        hasNotifications: json['hasNotifications'] as bool? ?? false,
-        hasPlayback: json['hasPlayback'] as bool? ?? false,
-        hasRecordingSearch: json['hasRecordingSearch'] as bool? ?? false,
-        hasRecordingDownload: json['hasRecordingDownload'] as bool? ?? false,
-        availableProfiles: List<String>.from(json['availableProfiles'] as List? ?? []),
-        imagingOptions: json['imagingOptions'] as String?,
-        lastDetected: json['lastDetected'] != null ? DateTime.parse(json['lastDetected'] as String) : null,
-        ptzPositions: (json['ptzPositions'] as List? ?? [])
-            .map((p) => PtzPosition.fromJson(p as Map<String, dynamic>))
-            .toList(),
-        motionZones: (json['motionZones'] as List? ?? [])
-            .map((z) => MotionDetectionZone.fromJson(z as Map<String, dynamic>))
-            .toList(),
-        nightModeEnabled: json['nightModeEnabled'] as bool? ?? false,
-        irLightsEnabled: json['irLightsEnabled'] as bool? ?? false,
-        supportedRecordingFormats: List<String>.from(json['supportedRecordingFormats'] as List? ?? []),
-        supportsOnvifProfileG: json['supportsOnvifProfileG'] as bool? ?? false,
-       );
-}
+// CameraCapabilities removida para evitar conflito - usar a de camera_model.dart
 
 class CameraData {
   final int id;
@@ -250,10 +272,13 @@ class CameraData {
   final String streamUrl; // RTSP/HTTP URL
   final String? username;
   final String? password;
-  final int? port; // opcional, para referência
+  final int? port; // opcional, para referência (mantido para compatibilidade)
   final String transport; // 'tcp' ou 'udp'
   final CameraCapabilities? capabilities; // Capacidades detectadas via ONVIF
   final bool acceptSelfSigned;
+  final CameraPortConfiguration portConfiguration; // Nova configuração de portas
+  final String? host; // Host/IP da câmera (extraído do streamUrl se não fornecido)
+  final CameraStatus status; // Status atual da câmera
 
   const CameraData({
     required this.id,
@@ -269,14 +294,17 @@ class CameraData {
     this.transport = 'tcp', // Padrão TCP para melhor estabilidade
     this.capabilities,
     this.acceptSelfSigned = false,
-  });
+    CameraPortConfiguration? portConfiguration,
+    this.host,
+    this.status = CameraStatus.offline, // Status padrão
+  }) : portConfiguration = portConfiguration ?? const CameraPortConfiguration();
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
         'isLive': isLive,
-        'statusColor': statusColor.value,
-        'uniqueColor': uniqueColor.value,
+        'statusColor': statusColor.toARGB32(),
+        'uniqueColor': uniqueColor.toARGB32(),
         'icon': icon.codePoint,
         'streamUrl': streamUrl,
         'username': username,
@@ -285,6 +313,9 @@ class CameraData {
         'transport': transport,
         'capabilities': capabilities?.toJson(),
         'acceptSelfSigned': acceptSelfSigned,
+        'portConfiguration': portConfiguration.toJson(),
+        'host': host,
+        'status': status.name,
       };
 
   factory CameraData.fromJson(Map<String, dynamic> json) => CameraData(
@@ -301,7 +332,72 @@ class CameraData {
         transport: json['transport'] as String? ?? 'tcp',
         capabilities: json['capabilities'] != null ? CameraCapabilities.fromJson(json['capabilities'] as Map<String, dynamic>) : null,
         acceptSelfSigned: json['acceptSelfSigned'] as bool? ?? false,
+        portConfiguration: json['portConfiguration'] != null 
+            ? CameraPortConfiguration.fromJson(json['portConfiguration'] as Map<String, dynamic>)
+            : const CameraPortConfiguration(), // Configuração padrão para compatibilidade
+        host: json['host'] as String?,
+        status: CameraStatus.values.firstWhere(
+          (e) => e.name == (json['status'] as String?),
+          orElse: () => CameraStatus.offline,
+        ),
        );
+
+  // Extrai o host/IP do streamUrl
+  String getHost() {
+    if (host != null) return host!;
+    
+    try {
+      final uri = Uri.parse(streamUrl);
+      return uri.host;
+    } catch (e) {
+      // Fallback: tentar extrair IP/host manualmente
+      final regex = RegExp(r'://([^:/]+)');
+      final match = regex.firstMatch(streamUrl);
+      return match?.group(1) ?? 'unknown';
+    }
+  }
+
+  // Getter para compatibilidade com código existente
+  String get ipAddress => getHost();
+
+  // Método copyWith para compatibilidade
+  CameraData copyWith({
+    int? id,
+    String? name,
+    bool? isLive,
+    Color? statusColor,
+    Color? uniqueColor,
+    IconData? icon,
+    String? streamUrl,
+    String? username,
+    String? password,
+    int? port,
+    String? transport,
+    CameraCapabilities? capabilities,
+    bool? acceptSelfSigned,
+    CameraPortConfiguration? portConfiguration,
+    String? host,
+    CameraStatus? status,
+  }) {
+    return CameraData(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      isLive: isLive ?? this.isLive,
+      statusColor: statusColor ?? this.statusColor,
+      uniqueColor: uniqueColor ?? this.uniqueColor,
+      icon: icon ?? this.icon,
+      streamUrl: streamUrl ?? this.streamUrl,
+      username: username ?? this.username,
+      password: password ?? this.password,
+      port: port ?? this.port,
+      transport: transport ?? this.transport,
+      capabilities: capabilities ?? this.capabilities,
+      acceptSelfSigned: acceptSelfSigned ?? this.acceptSelfSigned,
+      portConfiguration: portConfiguration ?? this.portConfiguration,
+      host: host ?? this.host,
+      status: status ?? this.status,
+    );
+  }
 
   // Gera uma cor única baseada no ID da câmera
   static int generateUniqueColor(int cameraId) {
@@ -340,4 +436,33 @@ class CameraData {
         return Icons.videocam_outlined; // fallback padrão
     }
   }
+}
+
+// Modelo para dados de notificação da UI
+class NotificationData {
+  final int cameraId;
+  final String message;
+  final String time;
+  final Color statusColor;
+
+  const NotificationData({
+    required this.cameraId,
+    required this.message,
+    required this.time,
+    required this.statusColor,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'cameraId': cameraId,
+        'message': message,
+        'time': time,
+        'statusColor': statusColor.toARGB32(),
+      };
+
+  factory NotificationData.fromJson(Map<String, dynamic> json) => NotificationData(
+        cameraId: json['cameraId'] as int,
+        message: json['message'] as String,
+        time: json['time'] as String,
+        statusColor: Color(json['statusColor'] as int),
+      );
 }

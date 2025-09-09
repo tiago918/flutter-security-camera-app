@@ -1,0 +1,55 @@
+Launching lib\main.dart on motorola edge 20 in debug mode...
+Running Gradle task 'assembleDebug'...                          
+flutterSdkVersion: 3.32.8, 33208
+I/flutter (19694): [IMPORTANT:flutter/shell/platform/android/android_context_vk_impeller.cc(61)] Using the Impeller rendering backend (Vulkan).
+I/flutter (19694): Erro ao inicializar LoggingService: FileSystemException: Creation failed, path = 'c:\Users\tiago\Desktop\app camera 2\logs' (OS Error: Read-only file system, errno = 30)
+I/flutter (19694): NotificationService initialized
+I/flutter (19694): Notification added: Movimento Detectado for camera Desconhecida
+I/flutter (19694): WSDiscoveryService: Iniciando descoberta WS-Discovery...
+I/flutter (19694): 🔄 Progresso da descoberta: Descobrindo câmeras ONVIF... - 1/3
+I/flutter (19694): WSDiscoveryService: Probe enviado para 239.255.255.250:3702
+I/flutter (19694): MDNSService: Iniciando descoberta mDNS...
+I/flutter (19694): 🔄 Progresso da descoberta: Descobrindo via mDNS... - 2/3
+I/flutter (19694): MDNSService: Buscando serviços _rtsp._tcp...
+I/flutter (19694): MDNSService: Buscando serviços _onvif._tcp...
+I/flutter (19694): 🔄 Progresso da descoberta: Scan completo de portas... - 3/3
+I/flutter (19694): 🔄 Progresso da descoberta: Concluído - 3/3
+I/flutter (19694): DEBUG: Carregando 0 dispositivos do cache
+I/flutter (19694): DEBUG: ===== RELATÓRIO DE DESCOBERTA =====
+I/flutter (19694): DEBUG: Total de dispositivos encontrados: 0
+I/flutter (19694): DEBUG: Câmeras identificadas: 0
+I/flutter (19694): DEBUG: Dispositivos não-câmera filtrados: 0
+I/flutter (19694): DEBUG: =====================================
+I/flutter (19694): Notification added: Movimento Detectado for camera Desconhecida
+I/flutter (19694): Notification added: Movimento Detectado for camera Desconhecida
+I/flutter (19694): WSDiscoveryService: Iniciando descoberta WS-Discovery...
+I/flutter (19694): 🔄 Progresso da descoberta: Descobrindo câmeras ONVIF... - 1/3
+I/flutter (19694): WSDiscoveryService: Probe enviado para 239.255.255.250:3702
+I/flutter (19694): MDNSService: Iniciando descoberta mDNS...
+I/flutter (19694): 🔄 Progresso da descoberta: Descobrindo via mDNS... - 2/3
+I/flutter (19694): MDNSService: Buscando serviços _rtsp._tcp...
+I/flutter (19694): MDNSService: Buscando serviços _onvif._tcp...
+I/flutter (19694): 🔄 Progresso da descoberta: Scan completo de portas... - 3/3
+I/flutter (19694): 🔄 Progresso da descoberta: Concluído - 3/3
+I/flutter (19694): DEBUG: Carregando 1 dispositivos do cache
+I/flutter (19694): DEBUG: CÂMERA ENCONTRADA - Câmera RTSP (192.168.3.49:554) (192.168.3.49) - protocol: RTSP, protocols: []
+I/flutter (19694): DEBUG: ===== RELATÓRIO DE DESCOBERTA =====
+I/flutter (19694): DEBUG: Total de dispositivos encontrados: 1
+I/flutter (19694): DEBUG: Câmeras identificadas: 1
+I/flutter (19694): DEBUG: Dispositivos não-câmera filtrados: 0
+I/flutter (19694): DEBUG: =====================================
+I/flutter (19694): Notification added: Movimento Detectado for camera Desconhecida
+I/flutter (19694): DEBUG: Conectando ao dispositivo descoberto: Câmera RTSP (192.168.3.49:554) (192.168.3.49)
+I/flutter (19694): DEBUG: Testando conexão sem credenciais: rtsp://192.168.3.49:554/cam/realmonitor?channel=1&subtype=0
+I/flutter (19694): DEBUG: Dispositivo provavelmente não requer autenticação
+I/flutter (19694): Protocolos disponíveis: []
+I/flutter (19694): DEBUG: URL RTSP construída: rtsp://192.168.3.49:554/cam/realmonitor?channel=1&subtype=0
+I/flutter (19694): DEBUG: Dispositivo conectado e salvo com sucesso
+I/flutter (19694): Notification added: Movimento Detectado for camera Câmera RTSP (192.168.3.49:554)
+I/flutter (19694): DEBUG: Conectando ao dispositivo descoberto: Câmera RTSP (192.168.3.49:554) (192.168.3.49)
+I/flutter (19694): DEBUG: Testando conexão sem credenciais: rtsp://192.168.3.49:554/cam/realmonitor?channel=1&subtype=0
+I/flutter (19694): DEBUG: Dispositivo provavelmente não requer autenticação
+I/flutter (19694): Protocolos disponíveis: []
+I/flutter (19694): DEBUG: URL RTSP construída: rtsp://192.168.3.49:554/cam/realmonitor?channel=1&subtype=0
+I/flutter (19694): DEBUG: Dispositivo conectado e salvo com sucesso
+I/flutter (19694): Notification added: Movimento Detectado for camera Câmera RTSP (192.168.3.49:554)

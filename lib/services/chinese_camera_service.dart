@@ -1,7 +1,7 @@
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import '../models/camera_models.dart';
+import 'logging_service.dart';
 
 /// Serviço para protocolos específicos de câmeras chinesas
 class ChineseCameraService {
@@ -14,28 +14,39 @@ class ChineseCameraService {
   }) async {
     try {
       print('CHINESE CAMERA DEBUG: Starting discovery for $host');
+      LoggingService.instance.discoveryLog('Iniciando descoberta de câmeras chinesas para host: $host');
       final recordings = <RecordingInfo>[];
       
       // Método 1: Protocolo XMEye/ICSEE
+      LoggingService.instance.discoveryLog('Testando protocolo XMEye/ICSEE para $host');
       final xmeyeRecordings = await _discoverXMEyeRecordings(host, user, pass, startTime, endTime);
       recordings.addAll(xmeyeRecordings);
+      LoggingService.instance.discoveryLog('XMEye encontrou ${xmeyeRecordings.length} gravações');
       
       // Método 2: Protocolo NetSDK (Dahua)
+      LoggingService.instance.discoveryLog('Testando protocolo NetSDK (Dahua) para $host');
       final netsdkRecordings = await _discoverNetSDKRecordings(host, user, pass, startTime, endTime);
       recordings.addAll(netsdkRecordings);
+      LoggingService.instance.discoveryLog('NetSDK encontrou ${netsdkRecordings.length} gravações');
       
       // Método 3: Protocolo Hikvision ISAPI
+      LoggingService.instance.discoveryLog('Testando protocolo Hikvision ISAPI para $host');
       final hikvisionRecordings = await _discoverHikvisionRecordings(host, user, pass, startTime, endTime);
       recordings.addAll(hikvisionRecordings);
+      LoggingService.instance.discoveryLog('Hikvision encontrou ${hikvisionRecordings.length} gravações');
       
       // Método 4: Protocolo Xiongmai
+      LoggingService.instance.discoveryLog('Testando protocolo Xiongmai para $host');
       final xiongmaiRecordings = await _discoverXiongmaiRecordings(host, user, pass, startTime, endTime);
       recordings.addAll(xiongmaiRecordings);
+      LoggingService.instance.discoveryLog('Xiongmai encontrou ${xiongmaiRecordings.length} gravações');
       
       print('CHINESE CAMERA DEBUG: Total recordings found: ${recordings.length}');
+      LoggingService.instance.discoveryLog('Total de gravações encontradas em câmeras chinesas: ${recordings.length}');
       return recordings;
     } catch (e) {
       print('CHINESE CAMERA DEBUG ERROR: Discovery failed: $e');
+      LoggingService.instance.error('Erro na descoberta de câmeras chinesas: $e');
       return [];
     }
   }

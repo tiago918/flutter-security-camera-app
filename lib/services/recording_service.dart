@@ -1,413 +1,570 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:path_provider/path_provider.dart';
-import 'package:easy_onvif/onvif.dart';
-import '../models/camera_models.dart';
-// ignore_for_file: avoid_print
+import 'dart:math';
+import '../models/recording.dart';
+import 'camera_service.dart';
 
 class RecordingService {
   static final RecordingService _instance = RecordingService._internal();
   factory RecordingService() => _instance;
   RecordingService._internal();
 
-  final Map<String, RecordingSession> _activeRecordings = {};
-  final StreamController<Map<String, RecordingSession>> _recordingsController = 
-      StreamController<Map<String, RecordingSession>>.broadcast();
+  final CameraService _cameraService = CameraService();
+  final Map<String, List<Recording>> _recordings = {};
+  final Map<String, Recording?> _activeRecordings = {};
+  final Map<String, Timer?> _recordingTimers = {};
+  final Map<String, StreamController<RecordingEvent>> _eventStreams = {};
+  final Map<String, RecordingConfig> _configs = {};
+  final Map<String, int> _recordingCounters = {};
 
-  Stream<Map<String, RecordingSession>> get recordingsStream => _recordingsController.stream;
-  Map<String, RecordingSession> get activeRecordings => Map.unmodifiable(_activeRecordings);
+  /// Configura gravação para uma câmera
+  Future<bool> configureRecording(
+    String cameraId,
+    RecordingConfig config,
+  ) async {
+    if (!_cameraService.isConnected(cameraId)) {
+      print('Câmera $cameraId não está conectada');
+      return false;
+    }
 
-  static const Duration _connectionTimeout = Duration(seconds: 10);
-  static const Duration _commandTimeout = Duration(seconds: 5);
-
-  /// Inicia a gravação de uma câmera
-  Future<bool> startRecording(CameraData camera, {Duration? duration}) async {
     try {
-      // Verificar se já está gravando
-      if (_activeRecordings.containsKey(camera.id.toString())) {
-        // Recording: Camera ${camera.name} is already recording
-        return false;
-      }
+      final command = {
+        'Command': 'SET_RECORDING_CONFIG',
+        'AutoRecordingEnabled': config.autoRecordingEnabled,
+        'RecordingQuality': config.quality.name,
+        'MaxDuration': config.maxDuration?.inSeconds,
+        'MaxFileSize': config.maxFileSize,
+        'StoragePath': config.storagePath,
+        'FileNamePattern': config.fileNamePattern,
+        'MotionTriggered': config.motionTriggered,
+        'ScheduleEnabled': config.scheduleEnabled,
+        'Schedule': config.schedule?.map((schedule) => {
+          'dayOfWeek': schedule.dayOfWeek,
+          'startTime': schedule.startTime,
+          'endTime': schedule.endTime,
+          'enabled': schedule.enabled,
+        }).toList(),
+        'PreRecordDuration': config.preRecordDuration.inSeconds,
+        'PostRecordDuration': config.postRecordDuration.inSeconds,
+        'Timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
 
-      final user = camera.username?.trim() ?? '';
-      final pass = camera.password?.trim() ?? '';
-      if (user.isEmpty || pass.isEmpty) {
-        // Recording Error: Missing ONVIF credentials for ${camera.name}
-        return false;
-      }
-
-      final uri = Uri.tryParse(camera.streamUrl);
-      if (uri == null) return false;
+      final response = await _cameraService.sendCommand(cameraId, command);
       
-      final host = uri.host;
-      if (host.isEmpty) return false;
-
-      print('Recording: Starting recording for ${camera.name} at $host');
-
-      // Conectar ao dispositivo ONVIF
-      final portsToTry = <int>[80, 8080, 8000, 8899];
-      Onvif? onvif;
-      
-      for (final port in portsToTry) {
-        try {
-          onvif = await Onvif.connect(
-            host: '$host:$port',
-            username: user,
-            password: pass,
-          ).timeout(_connectionTimeout);
-          print('Recording: Connected to $host:$port for recording');
-          break;
-        } catch (error) {
-          print('Recording: Failed to connect to $host:$port -> $error');
-          continue;
-        }
-      }
-
-      if (onvif == null) {
-        print('Recording Error: Could not connect to ONVIF service for $host');
-        return false;
-      }
-
-      // Obter perfis de mídia
-      final profiles = await onvif.media.getProfiles().timeout(_commandTimeout);
-      if (profiles.isEmpty) {
-        print('Recording Error: No media profiles found on device $host');
-        return false;
-      }
-
-      final profile = profiles.first;
-      print('Recording: Using profile token: ${profile.token}');
-
-      // Obter URI do stream para gravação
-      final streamUri = await onvif.media.getStreamUri(profile.token).timeout(_commandTimeout);
-      print('Recording: Stream URI obtained: $streamUri');
-
-      // Criar diretório de gravações
-      final recordingsDir = await _getRecordingsDirectory();
-      final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-      final filename = '${camera.name}_$timestamp.mp4';
-      final filePath = '${recordingsDir.path}/$filename';
-
-      // Criar sessão de gravação
-      final session = RecordingSession(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
-        cameraId: camera.id.toString(),
-        cameraName: camera.name,
-        filePath: filePath,
-        startTime: DateTime.now(),
-        duration: duration,
-        streamUri: streamUri,
-        status: RecordingStatus.starting,
-      );
-
-      _activeRecordings[camera.id.toString()] = session;
-      _recordingsController.add(_activeRecordings);
-
-      // Iniciar gravação usando ffmpeg (se disponível) ou método alternativo
-      final success = await _startRecordingProcess(session);
-      
-      if (success) {
-        _activeRecordings[camera.id.toString()] = session.copyWith(status: RecordingStatus.recording);
-        _recordingsController.add(_activeRecordings);
+      if (response != null && response['Ret'] == 100) {
+        _configs[cameraId] = config;
+        _recordingCounters[cameraId] = 0;
         
-        // Configurar timer para parar gravação automaticamente se duração especificada
-        if (duration != null) {
-          Timer(duration, () => stopRecording(camera.id.toString()));
-        }
+        // Cria diretório de armazenamento se não existir
+        await _ensureStorageDirectory(config.storagePath);
         
-        print('Recording: Successfully started recording for ${camera.name}');
+        print('Configuração de gravação definida para câmera $cameraId');
         return true;
       } else {
-        _activeRecordings.remove(camera.id.toString());
-        _recordingsController.add(_activeRecordings);
+        print('Falha ao configurar gravação: ${response?['Error'] ?? 'Erro desconhecido'}');
         return false;
       }
     } catch (e) {
-      // Recording Error: Exception starting recording: $e
-      _activeRecordings.remove(camera.id.toString());
-      _recordingsController.add(_activeRecordings);
+      print('Erro ao configurar gravação para câmera $cameraId: $e');
       return false;
     }
   }
 
-  /// Para a gravação de uma câmera
-  Future<bool> stopRecording(String cameraId) async {
+  /// Inicia gravação manual
+  Future<Recording?> startRecording(
+    String cameraId, {
+    Duration? duration,
+    RecordingType type = RecordingType.manual,
+    String? eventId,
+  }) async {
+    if (!_cameraService.isConnected(cameraId)) {
+      print('Câmera $cameraId não está conectada');
+      return null;
+    }
+
+    // Verifica se já está gravando
+    if (_activeRecordings[cameraId] != null) {
+      print('Câmera $cameraId já está gravando');
+      return _activeRecordings[cameraId];
+    }
+
     try {
-      final session = _activeRecordings[cameraId];
-      if (session == null) {
-        // Recording: No active recording found for camera $cameraId
-        return false;
-      }
+      final config = _configs[cameraId] ?? _getDefaultConfig();
+      final recordingId = _generateRecordingId(cameraId);
+      final fileName = _generateFileName(cameraId, type);
+      final filePath = '${config.storagePath}/$fileName';
 
-      print('Recording: Stopping recording for ${session.cameraName}');
-      
-      // Atualizar status
-      _activeRecordings[cameraId] = session.copyWith(status: RecordingStatus.stopping);
-      _recordingsController.add(_activeRecordings);
+      final command = {
+        'Command': 'START_RECORDING',
+        'RecordingId': recordingId,
+        'FilePath': filePath,
+        'Quality': config.quality.name,
+        'Duration': duration?.inSeconds ?? config.maxDuration?.inSeconds,
+        'AudioEnabled': config.audioEnabled,
+        'Timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
 
-      // Parar processo de gravação
-      final success = await _stopRecordingProcess(session);
+      final response = await _cameraService.sendCommand(cameraId, command);
       
-      // Remover da lista de gravações ativas
-      _activeRecordings.remove(cameraId);
-      _recordingsController.add(_activeRecordings);
-      
-      if (success) {
-        print('Recording: Successfully stopped recording for ${session.cameraName}');
+      if (response != null && response['Ret'] == 100) {
+        final recording = Recording(
+          id: recordingId,
+          cameraId: cameraId,
+          fileName: fileName,
+          filePath: filePath,
+          startTime: DateTime.now(),
+          type: type,
+          quality: config.quality,
+          status: RecordingStatus.recording,
+          eventId: eventId,
+        );
+
+        _activeRecordings[cameraId] = recording;
+        _addRecordingToList(cameraId, recording);
         
-        // Verificar se arquivo foi criado
-        final file = File(session.filePath);
-        if (await file.exists()) {
-          final size = await file.length();
-          print('Recording: File saved: ${session.filePath} (${_formatFileSize(size)})');
+        // Configura timer para parar gravação automaticamente
+        if (duration != null) {
+          _recordingTimers[cameraId] = Timer(duration, () {
+            stopRecording(cameraId);
+          });
         }
+        
+        _emitRecordingEvent(cameraId, RecordingEvent(
+          type: RecordingEventType.started,
+          recording: recording,
+          timestamp: DateTime.now(),
+        ));
+        
+        print('Gravação iniciada para câmera $cameraId: $fileName');
+        return recording;
+      } else {
+        print('Falha ao iniciar gravação: ${response?['Error'] ?? 'Erro desconhecido'}');
+        return null;
       }
-      
-      return success;
     } catch (e) {
-      // Recording Error: Exception stopping recording: $e
-      _activeRecordings.remove(cameraId);
-      _recordingsController.add(_activeRecordings);
-      return false;
+      print('Erro ao iniciar gravação para câmera $cameraId: $e');
+      return null;
     }
   }
 
-  /// Inicia o processo de gravação
-  Future<bool> _startRecordingProcess(RecordingSession session) async {
+  /// Para gravação
+  Future<bool> stopRecording(String cameraId) async {
+    final activeRecording = _activeRecordings[cameraId];
+    if (activeRecording == null) {
+      print('Nenhuma gravação ativa para câmera $cameraId');
+      return false;
+    }
+
     try {
-      // Método 1: Tentar usar ffmpeg se disponível
-      if (await _isFFmpegAvailable()) {
-        return await _startFFmpegRecording(session);
+      final command = {
+        'Command': 'STOP_RECORDING',
+        'RecordingId': activeRecording.id,
+        'Timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
+
+      final response = await _cameraService.sendCommand(cameraId, command);
+      
+      if (response != null && response['Ret'] == 100) {
+        // Para timer se existir
+        _recordingTimers[cameraId]?.cancel();
+        _recordingTimers.remove(cameraId);
+        
+        // Atualiza recording
+        final updatedRecording = activeRecording.copyWith(
+          endTime: DateTime.now(),
+          status: RecordingStatus.completed,
+          fileSize: response['FileSize'] ?? 0,
+          duration: DateTime.now().difference(activeRecording.startTime),
+        );
+        
+        _updateRecordingInList(cameraId, updatedRecording);
+        _activeRecordings.remove(cameraId);
+        
+        _emitRecordingEvent(cameraId, RecordingEvent(
+          type: RecordingEventType.stopped,
+          recording: updatedRecording,
+          timestamp: DateTime.now(),
+        ));
+        
+        print('Gravação parada para câmera $cameraId');
+        return true;
+      } else {
+        print('Falha ao parar gravação: ${response?['Error'] ?? 'Erro desconhecido'}');
+        return false;
       }
-      
-      // Método 2: Gravação simples via HTTP stream
-      return await _startHttpStreamRecording(session);
     } catch (e) {
-      print('Recording Error: Failed to start recording process: $e');
+      print('Erro ao parar gravação para câmera $cameraId: $e');
       return false;
     }
   }
 
-  /// Para o processo de gravação
-  Future<bool> _stopRecordingProcess(RecordingSession session) async {
+  /// Inicia gravação por evento de movimento
+  Future<Recording?> startMotionRecording(
+    String cameraId,
+    String motionEventId,
+  ) async {
+    final config = _configs[cameraId];
+    if (config == null || !config.motionTriggered) {
+      return null;
+    }
+
+    final duration = config.maxDuration ?? const Duration(minutes: 5);
+    return await startRecording(
+      cameraId,
+      duration: duration,
+      type: RecordingType.motion,
+      eventId: motionEventId,
+    );
+  }
+
+  /// Inicia gravação agendada
+  Future<Recording?> startScheduledRecording(String cameraId) async {
+    final config = _configs[cameraId];
+    if (config == null || !config.scheduleEnabled) {
+      return null;
+    }
+
+    return await startRecording(
+      cameraId,
+      type: RecordingType.scheduled,
+    );
+  }
+
+  /// Obtém lista de gravações de uma câmera
+  List<Recording> getRecordings(String cameraId) {
+    return _recordings[cameraId] ?? [];
+  }
+
+  /// Obtém gravação ativa
+  Recording? getActiveRecording(String cameraId) {
+    return _activeRecordings[cameraId];
+  }
+
+  /// Verifica se está gravando
+  bool isRecording(String cameraId) {
+    return _activeRecordings[cameraId] != null;
+  }
+
+  /// Obtém gravação por ID
+  Recording? getRecordingById(String cameraId, String recordingId) {
+    final recordings = _recordings[cameraId] ?? [];
     try {
-      // Implementar lógica para parar o processo específico
-      // Por enquanto, assumir sucesso
-      return true;
+      return recordings.firstWhere((r) => r.id == recordingId);
     } catch (e) {
-      print('Recording Error: Failed to stop recording process: $e');
+      return null;
+    }
+  }
+
+  /// Remove gravação
+  Future<bool> deleteRecording(String cameraId, String recordingId) async {
+    final recording = getRecordingById(cameraId, recordingId);
+    if (recording == null) {
+      print('Gravação $recordingId não encontrada');
       return false;
     }
-  }
 
-  /// Verifica se ffmpeg está disponível
-  Future<bool> _isFFmpegAvailable() async {
     try {
-      final result = await Process.run('ffmpeg', ['-version']);
-      return result.exitCode == 0;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  /// Inicia gravação usando ffmpeg
-  Future<bool> _startFFmpegRecording(RecordingSession session) async {
-    try {
-      final args = [
-        '-i', session.streamUri,
-        '-c', 'copy',
-        '-f', 'mp4',
-        session.filePath,
-      ];
-      
-      print('Recording: Starting ffmpeg with args: ${args.join(' ')}');
-      
-      // Iniciar processo ffmpeg
-      await Process.start('ffmpeg', args);
-      
-      // Armazenar referência do processo para poder parar depois
-      // Em uma implementação completa, você manteria uma referência ao processo
-      
-      return true;
-    } catch (e) {
-      print('Recording Error: FFmpeg recording failed: $e');
-      return false;
-    }
-  }
-
-  /// Inicia gravação via HTTP stream
-  Future<bool> _startHttpStreamRecording(RecordingSession session) async {
-    try {
-      print('Recording: Starting HTTP stream recording (fallback method)');
-      
-      // Implementação simplificada - em produção, você implementaria
-      // um downloader de stream HTTP adequado
-      
-      // Por enquanto, criar um arquivo vazio para demonstração
-      final file = File(session.filePath);
-      await file.create(recursive: true);
-      await file.writeAsString('# Recording placeholder for ${session.cameraName}\n# Started at: ${session.startTime}\n');
-      
-      return true;
-    } catch (e) {
-      print('Recording Error: HTTP stream recording failed: $e');
-      return false;
-    }
-  }
-
-  /// Obtém o diretório de gravações
-  Future<Directory> _getRecordingsDirectory() async {
-    final appDir = await getApplicationDocumentsDirectory();
-    final recordingsDir = Directory('${appDir.path}/camera_recordings');
-    
-    if (!await recordingsDir.exists()) {
-      await recordingsDir.create(recursive: true);
-    }
-    
-    return recordingsDir;
-  }
-
-  /// Lista gravações salvas
-  Future<List<SavedRecording>> getSavedRecordings() async {
-    try {
-      final recordingsDir = await _getRecordingsDirectory();
-      final files = await recordingsDir.list().toList();
-      
-      final recordings = <SavedRecording>[];
-      
-      for (final file in files) {
-        if (file is File && file.path.endsWith('.mp4')) {
-          final stat = await file.stat();
-          final filename = file.path.split('/').last;
-          
-          recordings.add(SavedRecording(
-            id: filename,
-            filename: filename,
-            filePath: file.path,
-            size: stat.size,
-            createdAt: stat.modified,
-            duration: null, // Seria calculado analisando o arquivo
-          ));
-        }
-      }
-      
-      // Ordenar por data de criação (mais recente primeiro)
-      recordings.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-      
-      return recordings;
-    } catch (e) {
-      // Recording Error: Failed to get saved recordings: $e
-      return [];
-    }
-  }
-
-  /// Deleta uma gravação salva
-  Future<bool> deleteRecording(String recordingId) async {
-    try {
-      final recordingsDir = await _getRecordingsDirectory();
-      final file = File('${recordingsDir.path}/$recordingId');
-      
+      // Remove arquivo físico
+      final file = File(recording.filePath);
       if (await file.exists()) {
         await file.delete();
-        print('Recording: Deleted recording $recordingId');
-        return true;
       }
       
-      return false;
+      // Remove da lista
+      _recordings[cameraId]?.removeWhere((r) => r.id == recordingId);
+      
+      _emitRecordingEvent(cameraId, RecordingEvent(
+        type: RecordingEventType.deleted,
+        recording: recording,
+        timestamp: DateTime.now(),
+      ));
+      
+      print('Gravação $recordingId removida');
+      return true;
     } catch (e) {
-      // Recording Error: Failed to delete recording: $e
+      print('Erro ao remover gravação $recordingId: $e');
       return false;
     }
   }
 
-  /// Formata tamanho do arquivo
-  String _formatFileSize(int bytes) {
-    if (bytes < 1024) return '${bytes}B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)}KB';
-    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)}GB';
+  /// Remove múltiplas gravações
+  Future<int> deleteRecordings(String cameraId, List<String> recordingIds) async {
+    int deletedCount = 0;
+    
+    for (final recordingId in recordingIds) {
+      if (await deleteRecording(cameraId, recordingId)) {
+        deletedCount++;
+      }
+    }
+    
+    return deletedCount;
   }
 
-  /// Dispose resources
+  /// Remove gravações antigas
+  Future<int> cleanupOldRecordings(
+    String cameraId, {
+    Duration? olderThan,
+    int? keepCount,
+  }) async {
+    final recordings = getRecordings(cameraId);
+    if (recordings.isEmpty) return 0;
+
+    List<Recording> toDelete = [];
+    
+    if (olderThan != null) {
+      final cutoffDate = DateTime.now().subtract(olderThan);
+      toDelete.addAll(recordings.where((r) => r.startTime.isBefore(cutoffDate)));
+    }
+    
+    if (keepCount != null && recordings.length > keepCount) {
+      // Ordena por data (mais recentes primeiro)
+      final sortedRecordings = List<Recording>.from(recordings)
+        ..sort((a, b) => b.startTime.compareTo(a.startTime));
+      
+      // Adiciona os mais antigos para remoção
+      toDelete.addAll(sortedRecordings.skip(keepCount));
+    }
+    
+    // Remove duplicatas
+    toDelete = toDelete.toSet().toList();
+    
+    final recordingIds = toDelete.map((r) => r.id).toList();
+    return await deleteRecordings(cameraId, recordingIds);
+  }
+
+  /// Obtém estatísticas de gravação
+  RecordingStats getRecordingStats(String cameraId) {
+    final recordings = getRecordings(cameraId);
+    final activeRecording = getActiveRecording(cameraId);
+    
+    int totalRecordings = recordings.length;
+    int totalSize = recordings.fold(0, (sum, r) => sum + r.fileSize);
+    Duration totalDuration = recordings.fold(
+      Duration.zero,
+      (sum, r) => sum + (r.duration ?? Duration.zero),
+    );
+    
+    final today = DateTime.now();
+    final todayStart = DateTime(today.year, today.month, today.day);
+    final recordingsToday = recordings
+        .where((r) => r.startTime.isAfter(todayStart))
+        .length;
+    
+    return RecordingStats(
+      totalRecordings: totalRecordings,
+      recordingsToday: recordingsToday,
+      totalSize: totalSize,
+      totalDuration: totalDuration,
+      isCurrentlyRecording: activeRecording != null,
+      activeRecording: activeRecording,
+    );
+  }
+
+  /// Obtém stream de eventos de gravação
+  Stream<RecordingEvent>? getRecordingEventStream(String cameraId) {
+    if (_eventStreams[cameraId] == null) {
+      _eventStreams[cameraId] = StreamController<RecordingEvent>.broadcast();
+    }
+    return _eventStreams[cameraId]?.stream;
+  }
+
+  /// Sincroniza gravações com a câmera
+  Future<void> syncRecordings(String cameraId) async {
+    try {
+      final command = {
+        'Command': 'GET_RECORDINGS',
+        'Since': DateTime.now().subtract(const Duration(days: 30)).millisecondsSinceEpoch,
+        'Timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
+
+      final response = await _cameraService.sendCommand(cameraId, command);
+      
+      if (response != null && response['Ret'] == 100) {
+        final recordingsData = response['Recordings'] as List? ?? [];
+        final recordings = recordingsData.map((data) => Recording.fromJson(data)).toList();
+        
+        _recordings[cameraId] = recordings;
+        
+        print('${recordings.length} gravações sincronizadas para câmera $cameraId');
+      }
+    } catch (e) {
+      print('Erro ao sincronizar gravações para câmera $cameraId: $e');
+    }
+  }
+
+  /// Métodos auxiliares
+  
+  String _generateRecordingId(String cameraId) {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final counter = (_recordingCounters[cameraId] ?? 0) + 1;
+    _recordingCounters[cameraId] = counter;
+    return '${cameraId}_${timestamp}_$counter';
+  }
+
+  String _generateFileName(String cameraId, RecordingType type) {
+    final now = DateTime.now();
+    final dateStr = '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}';
+    final timeStr = '${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}';
+    final typeStr = type.name.toUpperCase();
+    
+    return '${cameraId}_${typeStr}_${dateStr}_$timeStr.mp4';
+  }
+
+  Future<void> _ensureStorageDirectory(String path) async {
+    final directory = Directory(path);
+    if (!await directory.exists()) {
+      await directory.create(recursive: true);
+    }
+  }
+
+  void _addRecordingToList(String cameraId, Recording recording) {
+    if (_recordings[cameraId] == null) {
+      _recordings[cameraId] = [];
+    }
+    _recordings[cameraId]!.add(recording);
+  }
+
+  void _updateRecordingInList(String cameraId, Recording updatedRecording) {
+    final recordings = _recordings[cameraId];
+    if (recordings != null) {
+      final index = recordings.indexWhere((r) => r.id == updatedRecording.id);
+      if (index != -1) {
+        recordings[index] = updatedRecording;
+      }
+    }
+  }
+
+  void _emitRecordingEvent(String cameraId, RecordingEvent event) {
+    if (_eventStreams[cameraId] == null) {
+      _eventStreams[cameraId] = StreamController<RecordingEvent>.broadcast();
+    }
+    _eventStreams[cameraId]?.add(event);
+  }
+
+  RecordingConfig _getDefaultConfig() {
+    return const RecordingConfig(
+      autoRecordingEnabled: false,
+      quality: RecordingQuality.high,
+      storagePath: './recordings',
+      fileNamePattern: '{camera}_{type}_{date}_{time}',
+      motionTriggered: false,
+      scheduleEnabled: false,
+      audioEnabled: true,
+      preRecordDuration: Duration(seconds: 5),
+      postRecordDuration: Duration(seconds: 5),
+    );
+  }
+
+  /// Dispose do serviço
   void dispose() {
-    // Parar todas as gravações ativas
-    for (final cameraId in _activeRecordings.keys.toList()) {
+    // Para todas as gravações ativas
+    final activeCameras = List<String>.from(_activeRecordings.keys);
+    for (final cameraId in activeCameras) {
       stopRecording(cameraId);
     }
     
-    _recordingsController.close();
+    // Para todos os timers
+    for (final timer in _recordingTimers.values) {
+      timer?.cancel();
+    }
+    _recordingTimers.clear();
+    
+    // Fecha todos os streams
+    for (final stream in _eventStreams.values) {
+      stream.close();
+    }
+    _eventStreams.clear();
+    
+    _recordings.clear();
+    _activeRecordings.clear();
+    _configs.clear();
+    _recordingCounters.clear();
   }
 }
 
-/// Status da gravação
-enum RecordingStatus {
-  starting,
-  recording,
-  stopping,
-  stopped,
-  error,
-}
+/// Classes auxiliares para gravação
 
-/// Sessão de gravação ativa
-class RecordingSession {
-  final String id;
-  final String cameraId;
-  final String cameraName;
-  final String filePath;
-  final DateTime startTime;
-  final Duration? duration;
-  final String streamUri;
-  final RecordingStatus status;
+class RecordingConfig {
+  final bool autoRecordingEnabled;
+  final RecordingQuality quality;
+  final Duration? maxDuration;
+  final int? maxFileSize; // em bytes
+  final String storagePath;
+  final String fileNamePattern;
+  final bool motionTriggered;
+  final bool scheduleEnabled;
+  final List<RecordingSchedule>? schedule;
+  final bool audioEnabled;
+  final Duration preRecordDuration;
+  final Duration postRecordDuration;
 
-  const RecordingSession({
-    required this.id,
-    required this.cameraId,
-    required this.cameraName,
-    required this.filePath,
-    required this.startTime,
-    this.duration,
-    required this.streamUri,
-    required this.status,
+  const RecordingConfig({
+    required this.autoRecordingEnabled,
+    required this.quality,
+    this.maxDuration,
+    this.maxFileSize,
+    required this.storagePath,
+    required this.fileNamePattern,
+    required this.motionTriggered,
+    required this.scheduleEnabled,
+    this.schedule,
+    this.audioEnabled = true,
+    this.preRecordDuration = const Duration(seconds: 5),
+    this.postRecordDuration = const Duration(seconds: 5),
   });
-
-  RecordingSession copyWith({
-    String? id,
-    String? cameraId,
-    String? cameraName,
-    String? filePath,
-    DateTime? startTime,
-    Duration? duration,
-    String? streamUri,
-    RecordingStatus? status,
-  }) {
-    return RecordingSession(
-      id: id ?? this.id,
-      cameraId: cameraId ?? this.cameraId,
-      cameraName: cameraName ?? this.cameraName,
-      filePath: filePath ?? this.filePath,
-      startTime: startTime ?? this.startTime,
-      duration: duration ?? this.duration,
-      streamUri: streamUri ?? this.streamUri,
-      status: status ?? this.status,
-    );
-  }
 }
 
-/// Gravação salva
-class SavedRecording {
-  final String id;
-  final String filename;
-  final String filePath;
-  final int size;
-  final DateTime createdAt;
-  final Duration? duration;
+class RecordingSchedule {
+  final int dayOfWeek; // 0-6 (domingo-sábado)
+  final String startTime; // HH:mm
+  final String endTime; // HH:mm
+  final bool enabled;
 
-  const SavedRecording({
-    required this.id,
-    required this.filename,
-    required this.filePath,
-    required this.size,
-    required this.createdAt,
-    this.duration,
+  const RecordingSchedule({
+    required this.dayOfWeek,
+    required this.startTime,
+    required this.endTime,
+    this.enabled = true,
+  });
+}
+
+class RecordingStats {
+  final int totalRecordings;
+  final int recordingsToday;
+  final int totalSize;
+  final Duration totalDuration;
+  final bool isCurrentlyRecording;
+  final Recording? activeRecording;
+
+  const RecordingStats({
+    required this.totalRecordings,
+    required this.recordingsToday,
+    required this.totalSize,
+    required this.totalDuration,
+    required this.isCurrentlyRecording,
+    this.activeRecording,
+  });
+}
+
+enum RecordingEventType {
+  started,
+  stopped,
+  paused,
+  resumed,
+  error,
+  deleted,
+}
+
+class RecordingEvent {
+  final RecordingEventType type;
+  final Recording recording;
+  final DateTime timestamp;
+  final String? error;
+
+  const RecordingEvent({
+    required this.type,
+    required this.recording,
+    required this.timestamp,
+    this.error,
   });
 }

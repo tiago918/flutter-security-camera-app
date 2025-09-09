@@ -73,37 +73,7 @@ class OnvifRecordingService { // Renamed from ONVIFRecordingDiscovery to match u
     }
   }
   
-  /// Obter gravações de um storage específico
-  Future<List<RecordingInfo>> _getRecordingsFromStorage(String host, String user, String pass, String storageToken, DateTime startTime, DateTime endTime) async {
-    try {
-      final soapBody = '''
-<?xml version="1.0" encoding="UTF-8"?>
-<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:trc="http://www.onvif.org/ver10/recording/wsdl">
-  <soap:Header/>
-  <soap:Body>
-    <trc:GetRecordings>
-      <trc:StorageToken>$storageToken</trc:StorageToken>
-    </trc:GetRecordings>
-  </soap:Body>
-</soap:Envelope>''';
-      
-      final response = await _makeAuthenticatedRequest(
-        'http://$host/onvif/recording_service',
-        soapBody,
-        user,
-        pass,
-      );
-      
-      if (response?.statusCode == 200) {
-        return _parseONVIFStorageResponse(response!.body, startTime, endTime);
-      }
-      
-      return [];
-    } catch (e) {
-      print('ONVIF DEBUG ERROR: GetRecordings from storage failed: $e');
-      return [];
-    }
-  }
+
   
   /// Parse das configurações de storage
   List<String> _parseStorageConfigurations(String xmlResponse) {
@@ -127,37 +97,7 @@ class OnvifRecordingService { // Renamed from ONVIFRecordingDiscovery to match u
     }
   }
   
-  /// Parse das gravações do storage ONVIF
-  List<RecordingInfo> _parseONVIFStorageResponse(String xmlResponse, DateTime startTime, DateTime endTime) {
-    try {
-      final document = XmlDocument.parse(xmlResponse);
-      final recordings = <RecordingInfo>[];
-      
-      final recordingElements = document.findAllElements('trc:Recording');
-      for (final element in recordingElements) {
-        final recordingToken = element.getAttribute('token') ?? '';
-        final nameElement = element.findElements('trc:Name').firstOrNull;
-        final filename = nameElement?.innerText ?? 'recording_$recordingToken.mp4';
-        
-        final recording = RecordingInfo(
-          id: 'onvif_storage_$recordingToken',
-          filename: filename,
-          startTime: startTime,
-          endTime: endTime,
-          duration: endTime.difference(startTime),
-          sizeBytes: 0,
-          recordingType: 'ONVIF Storage',
-        );
-        
-        recordings.add(recording);
-      }
-      
-      return recordings;
-    } catch (e) {
-      print('ONVIF DEBUG ERROR: Failed to parse ONVIF storage response: $e');
-      return [];
-    }
-  }
+
 
   /// Buscar gravações usando FindRecordings
   Future<String?> _findRecordings(String host, String user, String pass, DateTime startTime, DateTime endTime) async {
@@ -580,7 +520,6 @@ class OnvifRecordingService { // Renamed from ONVIFRecordingDiscovery to match u
   Future<List<RecordingInfo>> _executeHTTPCommand(String host, String user, String pass, String command, DateTime startTime, DateTime endTime) async {
     try {
       final uri = command.split(' ')[1]; // Extrair URI do comando
-      final method = command.split(' ')[0]; // GET ou POST
       
       final response = await http.get(
         Uri.parse('http://$host$uri'),
@@ -750,8 +689,8 @@ class OnvifRecordingService { // Renamed from ONVIFRecordingDiscovery to match u
           try { endTime = DateTime.parse(toEl.innerText.trim()); } catch (_) {}
         }
       }
-      if (startTime == null) startTime = DateTime.now();
-      if (endTime == null) endTime = startTime;
+      startTime ??= DateTime.now();
+      endTime ??= startTime;
       final duration = endTime.difference(startTime);
 
       return RecordingInfo(
@@ -778,7 +717,7 @@ class OnvifRecordingService { // Renamed from ONVIFRecordingDiscovery to match u
         final headers = <String, String>{
           'Content-Type': 'application/soap+xml; charset=utf-8',
           // Muitos dispositivos aceitam Basic Auth via HTTP header mesmo com WS-Security
-          'Authorization': 'Basic ' + base64Encode(utf8.encode('$user:$pass')),
+          'Authorization': 'Basic ${base64Encode(utf8.encode('$user:$pass'))}',
         };
         return await http
             .post(uri, headers: headers, body: payload)
@@ -837,7 +776,7 @@ class OnvifRecordingService { // Renamed from ONVIFRecordingDiscovery to match u
     try {
       final uri = Uri.parse(uriString);
       final q = Map<String, String>.from(uri.queryParameters);
-      String fmt(DateTime dt) => dt.toUtc().toIso8601String().split('.').first + 'Z';
+      String fmt(DateTime dt) => '${dt.toUtc().toIso8601String().split('.').first}Z';
       if (start != null) {
         q.putIfAbsent('starttime', () => fmt(start));
         // Chaves alternativas vistas em alguns fabricantes
@@ -864,19 +803,20 @@ class OnvifRecordingService { // Renamed from ONVIFRecordingDiscovery to match u
       final createdDt = DateTime.now().toUtc();
       var created = createdDt.toIso8601String();
       if (created.contains('.')) {
-        created = created.split('.').first + 'Z';
+        created = '${created.split('.').first}Z';
       } else if (!created.endsWith('Z')) {
-        created = created + 'Z';
+        created = '${created}Z';
       }
       final rand = Random.secure();
       final nonceBytes = Uint8List.fromList(List<int>.generate(16, (_) => rand.nextInt(256)));
       final nonceB64 = base64Encode(nonceBytes);
 
       // digest = Base64( SHA1( nonceBytes + created + password ) )
-      final toDigest = <int>[]
-        ..addAll(nonceBytes)
-        ..addAll(utf8.encode(created))
-        ..addAll(utf8.encode(pass));
+      final toDigest = <int>[
+        ...nonceBytes,
+        ...utf8.encode(created),
+        ...utf8.encode(pass),
+      ];
       final digest = crypto.sha1.convert(toDigest).bytes;
       final digestB64 = base64Encode(digest);
 
@@ -892,7 +832,7 @@ class OnvifRecordingService { // Renamed from ONVIFRecordingDiscovery to match u
         '</$p:Header>';
 
       // 1) Substituir Header self-closing
-      final selfClosing = RegExp('<$p:Header\s*/>');
+      final selfClosing = RegExp('<$p:Headers*/>');
       if (selfClosing.hasMatch(envelope)) {
         return envelope.replaceFirst(selfClosing, security);
       }

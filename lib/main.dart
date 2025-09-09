@@ -1,38 +1,52 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:fvp/fvp.dart' as fvp;
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'services/theme_service.dart';
+import 'services/camera_service.dart';
+import 'services/notification_service.dart';
+import 'services/ptz_service.dart';
+import 'services/motion_detection_service.dart';
+import 'services/night_mode_service.dart';
+import 'services/recording_service.dart';
+import 'services/logging_service.dart';
+import 'screens/main_screen.dart';
+import 'screens/settings_screen.dart';
 import 'pages/devices_and_cameras_page.dart';
 import 'pages/access_control_page.dart';
 import 'pages/security_settings_page.dart';
 
-import 'services/auth_service.dart';
-import 'services/onvif_playback_service.dart';
-
-import 'dart:io' show Platform;
-
 void main() async {
-  // Garante que os canais de plataforma estejam prontos antes de registrar o plugin
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Registrar o fvp ANTES de qualquer VideoPlayerController ser criado
+  
   try {
-    if (Platform.isAndroid) {
-      fvp.registerWith(options: {
-        // lowLatency removido para evitar o caminho de áudio OpenSL ES de baixa latência (gera o warning SL_RESULT_FEATURE_UNSUPPORTED)
-        'fastSeek': true,
-      });
-    }
+    // Initialize FVP first - CRITICAL for video playback
+    fvp.registerWith();
+    
+    // Initialize logging service
+    await LoggingService.instance.initialize();
+    LoggingService.instance.info('App iniciado - Inicializando serviços');
+    LoggingService.instance.info('FVP registrado com sucesso');
+    
+    // Initialize SharedPreferences
+    await SharedPreferences.getInstance();
+    LoggingService.instance.info('SharedPreferences inicializado');
+    
+    // Inicializar serviços
+    // CameraService será inicializado quando necessário
+    
+    // Initialize notification service
+    NotificationService.instance.initialize();
+    LoggingService.instance.info('NotificationService inicializado');
+    
+    LoggingService.instance.info('Todos os serviços inicializados com sucesso');
+    runApp(const SecurityCameraApp());
   } catch (e) {
-    // Não deixar que uma exceção aqui impeça o app de continuar
-    // Você poderá verificar logs depois para ajustar as opções do player
-    // ignore: avoid_print
-    print('fvp.registerWith falhou: $e');
+    LoggingService.instance.error('Erro na inicialização: $e');
+    debugPrint('Initialization error: $e');
+    runApp(const SecurityCameraApp());
   }
-
-  // Inicializa preferências do PlaybackService (HTTPS autoassinado)
-  await OnvifPlaybackService.initFromPrefs();
-
-  // Sobe a UI depois do registro do fvp
-  runApp(const SecurityCameraApp());
 }
 
 class SecurityCameraApp extends StatelessWidget {
@@ -40,80 +54,63 @@ class SecurityCameraApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Security Camera App',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF1A1A1A),
-        primaryColor: const Color(0xFF2D2D2D),
-        cardColor: const Color(0xFF2D2D2D),
-        textTheme: const TextTheme(
-          bodyLarge: TextStyle(color: Colors.white),
-          bodyMedium: TextStyle(color: Colors.white70),
-        ),
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider.value(value: ThemeService.instance..initialize()),
+        Provider.value(value: CameraService()),
+        Provider.value(value: NotificationService.instance),
+        Provider.value(value: PTZService()),
+        Provider.value(value: MotionDetectionService()),
+        Provider.value(value: NightModeService()),
+        Provider.value(value: RecordingService()),
+      ],
+      child: Consumer<ThemeService>(
+        builder: (context, themeService, child) {
+          return MaterialApp(
+            title: 'Security Camera App',
+            debugShowCheckedModeBanner: false,
+            theme: themeService.getLightTheme(),
+            darkTheme: themeService.getDarkTheme(),
+            themeMode: themeService.themeMode,
+            home: const AppMainScreen(),
+          );
+        },
       ),
-      home: const MainScreen(),
     );
   }
 }
 
-class MainScreen extends StatefulWidget {
-  const MainScreen({super.key});
+class AppMainScreen extends StatefulWidget {
+  const AppMainScreen({super.key});
 
   @override
-  State<MainScreen> createState() => _MainScreenState();
+  State<AppMainScreen> createState() => _AppMainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> {
+class _AppMainScreenState extends State<AppMainScreen> {
   int _selectedIndex = 0;
   bool _isAuthenticated = false;
 
   final List<Widget> _screens = const [
-    DevicesAndCamerasScreen(),
+    DevicesAndCamerasScreen(), // Página de câmeras como principal
     AccessControlScreen(),
-    SecuritySettingsScreen(),
+    SettingsScreen(), // Nova tela de configurações
   ];
   
   @override
   void initState() {
     super.initState();
-    _checkAuthStatus();
-  }
-  
-  Future<void> _checkAuthStatus() async {
-    final isAuth = await AuthService.instance.isAuthenticated();
-    setState(() {
-      _isAuthenticated = isAuth;
-    });
+    // Authentication check can be added here if needed
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF1A1A1A),
-        elevation: 0,
-        title: Row(
-          children: [
-            const Icon(Icons.security, color: Colors.white),
-            const SizedBox(width: 8),
-            const Text(
-              '',
-              style: TextStyle(color: Colors.white, fontSize: 18),
-            ),
-            const Spacer(),
-          ],
-        ),
-      ),
       body: IndexedStack(
         index: _selectedIndex,
         children: _screens,
       ),
       bottomNavigationBar: BottomNavigationBar(
-        backgroundColor: const Color(0xFF1A1A1A),
-        selectedItemColor: Colors.white,
-        unselectedItemColor: Colors.white54,
         currentIndex: _selectedIndex,
         type: BottomNavigationBarType.fixed,
         onTap: (index) {
@@ -145,25 +142,8 @@ class _MainScreenState extends State<MainScreen> {
             ),
             label: 'Acesso',
           ),
-          BottomNavigationBarItem(
-            icon: Stack(
-              children: [
-                const Icon(Icons.settings),
-                if (!_isAuthenticated)
-                  Positioned(
-                    right: 0,
-                    top: 0,
-                    child: Container(
-                      width: 8,
-                      height: 8,
-                      decoration: const BoxDecoration(
-                        color: Colors.orange,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
+          const BottomNavigationBarItem(
+            icon: Icon(Icons.settings),
             label: 'Configurações',
           ),
         ],

@@ -12,6 +12,7 @@ dependencies:
     sdk: flutter
 
   cupertino_icons: ^1.0.8
+  intl: 0.20.2
   
   # ONVIF discovery and video streaming
   easy_onvif: ^3.1.2
@@ -19,6 +20,7 @@ dependencies:
   video_player: ^2.9.2
   chewie: ^1.8.5
   shared_preferences: ^2.3.3
+  encrypted_shared_preferences: ^3.0.1
   crypto: ^3.0.3
   dio: ^5.4.0
   xml: ^6.4.2
@@ -26,7 +28,21 @@ dependencies:
   path_provider: ^2.1.5
   http_auth: ^1.0.3
   http: ^1.2.2
+  ftpconnect: ^2.0.7
   sdp_transform: ^0.3.2
+  stream_transform: ^2.1.0
+  
+  # Network discovery dependencies
+  network_info_plus: ^5.0.0
+  connectivity_plus: ^6.0.0
+  udp: ^5.0.3
+  multicast_dns: ^0.3.2+4
+  
+  # Additional dependencies for camera connection system
+  logger: ^2.0.2+1
+  retry: ^3.1.2
+  collection: ^1.18.0
+  meta: ^1.12.0
 
 dev_dependencies:
   flutter_test:
